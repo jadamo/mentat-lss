@@ -93,11 +93,10 @@ class ps_emulator():
         output_norm_data = torch.load(os.path.join(path,"output_normalizations.pt"), 
                                       map_location=self.device, weights_only=True)
         self.ps_fid        = output_norm_data[0]
-        self.ps_nw_fid     = output_norm_data[1]
-        self.invcov_full   = output_norm_data[2]
-        self.invcov_blocks = output_norm_data[3]
-        self.sqrt_eigvals  = output_norm_data[4]
-        self.Q             = output_norm_data[5]
+        self.invcov_full   = output_norm_data[1]
+        self.invcov_blocks = output_norm_data[2]
+        self.sqrt_eigvals  = output_norm_data[3]
+        self.Q             = output_norm_data[4]
         self.Q_inv = torch.zeros_like(self.Q, device="cpu")
         for (ps, z) in itertools.product(range(self.num_spectra), range(self.num_zbins)):
             self.Q_inv[ps, z] = torch.linalg.inv(self.Q[ps, z].to("cpu").to(torch.float64)).to(torch.float32)
@@ -478,7 +477,7 @@ class ps_emulator():
             yaml.dump(self.get_required_emu_parameters(), outfile, sort_keys=False, default_flow_style=False)
 
         # data related to output normalization
-        output_files = [self.ps_fid, self.ps_nw_fid, self.invcov_full, self.invcov_blocks, self.sqrt_eigvals, self.Q]
+        output_files = [self.ps_fid, self.invcov_full, self.invcov_blocks, self.sqrt_eigvals, self.Q]
         torch.save(output_files, os.path.join(save_dir, "output_normalizations.pt"))
 
         # Finally, the actual model parameters
@@ -586,6 +585,7 @@ def compile_multiple_device_training_results(save_dir:str, config_dir:str, num_g
 
             full_emulator.train_loss[ps, z, :epochs] = train_data[0,:]
             full_emulator.valid_loss[ps, z, :epochs] = train_data[1,:]
+            full_emulator.train_time = train_data[2,0]
 
     full_emulator.galaxy_ps_checkpoint = copy.deepcopy(full_emulator.galaxy_ps_model.state_dict())
     
