@@ -4,6 +4,8 @@ from scipy.special import lpmv
 from scipy.interpolate import InterpolatedUnivariateSpline, RectBivariateSpline
 from scipy.optimize import fsolve
 import itertools, math
+import warnings
+warnings.simplefilter("error", RuntimeWarning)
 
 import mentat_lss._vendor.symbolic_pofk.linear as linear
 from mentat_lss.cosmo_utils import LCDMCosmology, IRResum, get_log_extrap
@@ -28,7 +30,7 @@ class analytic_eft_model():
             redshift_list (list): list of effective redshifts in each bin
             ells (list): list of ell modes to calculate
             k (np.array): array of k-bins to calculate the multipoles with.
-            ndens (np.array): array of number densities (used for shotnoise terms). Should have shape (num_zbins, num_tracers)
+            ndens (np.array): array of number densities (used for shotnoise terms). Should have shape (num_tracers, num_zbins)
         """
 
         self.redshift_list = redshift_list
@@ -39,8 +41,6 @@ class analytic_eft_model():
         self.k = k
         self.mu = np.linspace(0.,1.,2**8+1)
         self.dmu = self.mu[1] - self.mu[0]
-
-        # HACK: hard-coding number density for now
         self.ndens = ndens
 
         self.k_lin = np.geomspace(1e-4, 10., 1000)
@@ -99,15 +99,15 @@ class analytic_eft_model():
         i = 0
         for pname in emu_params_list:
             if pname in list(self.params_bias.keys()):
-                for (ps, z) in itertools.product(range(self.num_tracers), range(self.num_zbins)):
+                for (z, ps) in itertools.product(range(self.num_zbins), range(self.num_tracers)):
                     self.params['%s_%s_%s' % (pname, ps, z)] = param_vector[i]
                     i += 1
             else:
                 self.params[pname] = param_vector[i]
                 i += 1
         
-        for (ps, z) in itertools.product(range(self.num_tracers), range(self.num_zbins)):
-            for pname in analytic_params_list:
+        for pname in analytic_params_list:
+            for (z, ps) in itertools.product(range(self.num_zbins), range(self.num_tracers)):
                 self.params['%s_%s_%s' % (pname, ps, z)] = param_vector[i]
                 i += 1
         
@@ -172,7 +172,11 @@ class analytic_eft_model():
         
         crit = False
         while crit == False:
-            root = fsolve(func, x0=np.log(k0), xtol=1e-6, maxfev=1000) # solve Delta2_lin(k_nl) = 1
+            try:
+                root = fsolve(func, x0=np.log(k0), xtol=1e-6, maxfev=1000) # solve Delta2_lin(k_nl) = 1
+            except RuntimeWarning:
+                print(f"WARNING: fsolve is not converging? Forcing break. k0 = {k0}")
+                return k0
             k0 = np.exp(root[0])
             crit = (np.abs(func(np.log(k0))) < 1e-6)
 
@@ -322,6 +326,10 @@ class analytic_eft_model():
             pkmu = np.ravel(pkmu)
         return pkmu
     
+    def get_coeff_ctr1_multipole(self, l):
+        cl = (self.ctr1['c%s' % (l)] + self.ctr2['c%s' % (l)]) / 2. if l in [0,2,4] else 0.
+        return cl
+
     def get_pk_ell_ctr1_ref(self, k_ref, ells, alpha_perp, alpha_para, irres=True):
         k_ref = np.atleast_1d(k_ref)
         mu_ref = np.linspace(0.,1.,2**8+1)
@@ -367,7 +375,7 @@ class analytic_eft_model():
             pkmu = stoch1['P_shot']
             pkmu = pkmu + stoch1['a0'] * np.kron((k / k_nl)**2, lpmv(0,0,mu)).reshape(len(k), len(mu))
             pkmu = pkmu + stoch1['a2'] * np.kron((k / k_nl)**2, lpmv(0,2,mu)).reshape(len(k), len(mu))
-            pkmu = 1. / self.ndens[z_idx, ps_idx] * pkmu
+            pkmu = 1. / self.ndens[ps_idx, z_idx] * pkmu
         # currently ignoring cross-power spectrum stochastic contribution
         else:
             pkmu = np.zeros((len(k), len(mu)))
@@ -393,7 +401,6 @@ class analytic_eft_model():
             return 0
 
         self.set_params(param_vector, emu_params_list, analytic_params_list)
-
         self.calculate_pk_lin(self.k_lin, self.params)
         self.set_ir_resum_params(self.params["h"], 1.)
         mu_grid = np.linspace(0., 1., 51)
@@ -420,10 +427,10 @@ class analytic_eft_model():
                 ctr1 = {pname: self.params['%s_%s_%s' % (pname, tr_1, z)] for pname in list(self.params_ctr.keys())}
                 ctr2 = {pname: self.params['%s_%s_%s' % (pname, tr_2, z)] for pname in list(self.params_ctr.keys())}
                 stoch = {pname: self.params['%s_%s_%s' % (pname, tr_1, z)] for pname in list(self.params_stoch.keys())}
-
                 # pkmu = self.get_tree_term(k_grid, mu_grid, bias1, bias2, params["fgrowth"][z], params["Dgrowth"][z]) + \
                 #        self.get_ctr_terms(k_grid, mu_grid, bias1, bias2, ctr1, ctr2, params["fgrowth"][z], params["Dgrowth"][z]) + \
                 #        self.get_stochastic_terms()
+
                 pkmu = self.get_ctr_terms(k_grid, mu_grid, b1_1, b1_2, ctr1, ctr2, self.params["fgrowth"][z], self.params["Dgrowth"][z]) + \
                        self.get_stochastic_terms(k_grid, mu_grid, tr_1, z, stoch, k_nl, tr_1 != tr_2)
 
@@ -440,7 +447,7 @@ class analytic_eft_model():
                 legendre = np.array([np.tile((2*l+1) * lpmv(0,l,self.mu), (len(self.k),1)) for l in self.ells])
                 pk_ell[z, ps_idx] = romb(pkmu * legendre, dx=self.dmu, axis=2)
                 
-                # pk_ell_ctr1 = self.get_pk_ell_ctr1_ref(self.k, self.ells, self.alpha_perp, self.alpha_para, irres=True)
+                # pk_ell_ctr1 = self.get_pk_ell_ctr1_ref(self.k, self.ells, self.params["alpha_perp"], self.params["alpha_para"], irres=True)
                 # pk_ell = pk_ell + pk_ell_ctr1
 
                 ps_idx += 1
