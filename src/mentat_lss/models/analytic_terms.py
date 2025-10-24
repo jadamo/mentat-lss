@@ -174,12 +174,12 @@ class analytic_eft_model():
         while crit == False:
             try:
                 root = fsolve(func, x0=np.log(k0), xtol=1e-6, maxfev=1000) # solve Delta2_lin(k_nl) = 1
+                k0 = np.exp(root[0])
+                crit = (np.abs(func(np.log(k0))) < 1e-6)
             except RuntimeWarning:
-                print(f"WARNING: fsolve is not converging? Forcing break. k0 = {k0}")
-                return k0
-            k0 = np.exp(root[0])
-            crit = (np.abs(func(np.log(k0))) < 1e-6)
-
+                print(f"WARNING: fsolve is not converging? Adjusting initial guess. k0 = {k0}")
+                k0 = k0 * 1.01
+                
         k_nl = np.exp(root[0])
         return k_nl
 
