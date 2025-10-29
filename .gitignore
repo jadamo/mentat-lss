@@ -9,6 +9,7 @@ docs/_templates/
 
 # Ignore build directories and files created by installing
 build/
+dist/
 *.egg-info/
 .DS_Store
 

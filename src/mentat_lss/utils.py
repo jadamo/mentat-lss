@@ -83,6 +83,50 @@ def get_gaussan_priors(cosmo_dict:dict):
 
     return priors, prior_names
 
+def prepare_emu_inputs(sample:dict, cosmo_dict:dict, num_tracers:int, num_zbins:int, required_emu_params:dict):
+    """takes a set of parameters and oragnizes them to the format expected by mentat-lss
+    
+    Args:
+        sample (dict): dictionary of (param_name, param_value)
+        cosmo_dict (dict) dictionary of cosmology + nuisance parameter values and ranges
+        num_tracers (int): number of correlated tracers to calculate
+        num_zbins (int): number of independent redshift bins to calculate
+        required_emu_params (dict): dictionary of parameter names required by the emulator
+    Returns:
+        param_vector (np.array): 1D list of parameters that can be directly passed to mentat-lss
+    """
+
+    param_vector = []
+    # fill in cosmo params in the order ps_1loop expects
+    for pname in list(cosmo_dict["cosmo_param_names"]):
+        if pname in required_emu_params:
+            if pname in sample:
+                #print(params.index(pname))
+                param_vector.append(sample[pname])
+            else:
+                param_vector.append(cosmo_dict["cosmo_params"][pname]["value"])
+
+    # fill in bias params
+    for pname in list(cosmo_dict["bias_param_names"] + 
+                      cosmo_dict["counterterm_param_names"] + 
+                      cosmo_dict["stochastic_param_names"]):
+        sub_vector = []
+        for iz in range(num_zbins):
+            for isample in range(num_tracers):
+                
+                key = pname+"_"+str(isample)+"_"+str(iz)
+                if key in required_emu_params or pname in required_emu_params:
+                    if key in sample:
+                        sub_vector.append(sample[key])
+                    elif pname in sample:
+                        sub_vector.append(sample[pname])
+                    elif key in cosmo_dict["nuisance_params"]:
+                        sub_vector.append(cosmo_dict["nuisance_params"][key]["value"])
+                    else:
+                        sub_vector.append(cosmo_dict["nuisance_params"][pname]["value"])
+        if sub_vector != []: param_vector += sub_vector
+
+    return np.array(param_vector)
 
 def prepare_ps_inputs(sample:dict, cosmo_dict:dict, num_tracers:int, num_zbins:int):
     """takes a set of parameters and oragnizes them to the format expected by ps_theory_calculator
@@ -224,7 +268,7 @@ def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, 
         if "pk-" in file:
             
             print("loading " + file + "...")
-            F = np.load(training_dir+file)
+            F = np.load(os.path.join(training_dir, file))
             params = F["params"]
             galaxy_ps = F["galaxy_ps"]
             del F
@@ -245,17 +289,17 @@ def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, 
 
     if remove_old_files == True:
         for file in all_filenames:
-            if "pk-" in file: os.remove(training_dir+file)
+            if "pk-" in file: os.remove(os.path.join(training_dir,file))
 
     print("splitting dataset into chunks of size [{:0.0f}, {:0.0f}, {:0.0f}]...".format(N_train, N_valid, N_test))
 
-    np.savez(training_dir+"pk-training.npz", 
+    np.savez(os.path.join(training_dir,"pk-training.npz"), 
                 params=all_params[0:N_train],
                 galaxy_ps=all_galaxy_ps[0:N_train])
-    np.savez(training_dir+"pk-validation.npz", 
+    np.savez(os.path.join(training_dir,"pk-validation.npz"), 
                 params=all_params[valid_start:valid_end], 
                 galaxy_ps=all_galaxy_ps[valid_start:valid_end])
-    np.savez(training_dir+"pk-testing.npz", 
+    np.savez(os.path.join(training_dir,"pk-testing.npz"), 
                 params=all_params[valid_end:test_end], 
                 galaxy_ps=all_galaxy_ps[valid_end:test_end]) 
 
