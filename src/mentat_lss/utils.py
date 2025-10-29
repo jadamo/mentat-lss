@@ -268,7 +268,7 @@ def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, 
         if "pk-" in file:
             
             print("loading " + file + "...")
-            F = np.load(training_dir+file)
+            F = np.load(os.path.join(training_dir, file))
             params = F["params"]
             galaxy_ps = F["galaxy_ps"]
             del F
@@ -289,17 +289,17 @@ def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, 
 
     if remove_old_files == True:
         for file in all_filenames:
-            if "pk-" in file: os.remove(training_dir+file)
+            if "pk-" in file: os.remove(os.path.join(training_dir,file))
 
     print("splitting dataset into chunks of size [{:0.0f}, {:0.0f}, {:0.0f}]...".format(N_train, N_valid, N_test))
 
-    np.savez(training_dir+"pk-training.npz", 
+    np.savez(os.path.join(training_dir,"pk-training.npz"), 
                 params=all_params[0:N_train],
                 galaxy_ps=all_galaxy_ps[0:N_train])
-    np.savez(training_dir+"pk-validation.npz", 
+    np.savez(os.path.join(training_dir,"pk-validation.npz"), 
                 params=all_params[valid_start:valid_end], 
                 galaxy_ps=all_galaxy_ps[valid_start:valid_end])
-    np.savez(training_dir+"pk-testing.npz", 
+    np.savez(os.path.join(training_dir,"pk-testing.npz"), 
                 params=all_params[valid_end:test_end], 
                 galaxy_ps=all_galaxy_ps[valid_end:test_end]) 
 

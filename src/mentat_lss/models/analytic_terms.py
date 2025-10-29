@@ -177,8 +177,8 @@ class analytic_eft_model():
                 k0 = np.exp(root[0])
                 crit = (np.abs(func(np.log(k0))) < 1e-6)
             except RuntimeWarning:
-                print(f"WARNING: fsolve is not converging? Adjusting initial guess. k0 = {k0}")
-                k0 = k0 * 1.01
+                #print(f"WARNING: fsolve is not converging? Aborting...")
+                return k0
                 
         k_nl = np.exp(root[0])
         return k_nl

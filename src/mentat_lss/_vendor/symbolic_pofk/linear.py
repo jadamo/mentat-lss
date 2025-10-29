@@ -240,10 +240,10 @@ def logF_fiducial(k, sigma8, Om, Ob, h, ns, extrapolate=False, kmin=9.e-3, kmax=
             pk_EisensteinHu_zb(k[m], sigma8, Om, Ob, h, ns, integral_norm=False) /
             pk_EisensteinHu_zb(k[m], sigma8, Om, Ob, h, ns, integral_norm=True)
         )
-    elif m.sum() > 0:
-        warnings.warn(
-            "Using Bartlett et al. formula outside tested regime. Due to problems with the Colossus Eisenstein & Hu fit on \
-                large scales (typically a 2 percent offset), it is strongly recommended to use extrapolate=False.")
+    # elif m.sum() > 0:
+    #     warnings.warn(
+    #         "Using Bartlett et al. formula outside tested regime. Due to problems with the Colossus Eisenstein & Hu fit on \
+    #             large scales (typically a 2 percent offset), it is strongly recommended to use extrapolate=False.")
 
     return logF
 
