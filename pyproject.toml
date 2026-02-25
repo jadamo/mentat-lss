@@ -20,7 +20,8 @@ dependencies = [
     "torch",
     "pytest",
     "tqdm",
-    "pyyaml"
+    "pyyaml",
+    "colossus"
 ]
 
 [tool.setuptools.packages.find]
