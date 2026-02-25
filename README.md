@@ -11,7 +11,7 @@ For more details on how to use this package, check out our documentation on [Rea
 
 ## Installing the code
 
-This package works on both Linux and MacOS (intel and arm64) platforms, and has so-far been tested using **Python 3.11**. There are two methods to install the code.
+This package works on both Linux and MacOS (intel and arm64) platforms, and has so-far been tested using **Python 3.9 - 3.11**. There are two main methods to install the code.
 
 ### Preliminaries
 

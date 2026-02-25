@@ -10,7 +10,7 @@ Generating a Training Set
 
 This stage is where you decide what power spectrum model you want to emulate, and the corresponding
 parameter ranges it will be valid in. Assuming you have access to ``ps_1loop``, we have provided a script in 
-``scripts/make_training_set_eft.py`` that will attempt to create a training set in the right format for you.
+``scripts/make_training_set_ps_1loop.py`` that will attempt to create a training set in the right format for you.
 
 If you are creating your own training set, the following are the required ingredients and format you should use:
 
