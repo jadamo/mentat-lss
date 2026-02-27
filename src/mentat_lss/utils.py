@@ -454,7 +454,7 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
     return chi2
 
 
-def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None, mode="galaxy_ps"):
+def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
     """run thru the given data set and returns the average loss value for a given sub-network, or all sub-networks in a list
 
     Args:
@@ -463,14 +463,18 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None, m
         loss_function (callable): loss function to use
         bin_idx (list, optional): [ps, z] values to calculate the average loss for. If None, recuresively calls
             this function with all possible values of ps and z. Defaults to None
-        mode (str, optional): which type of network to calculate the loss for (CURRENTLY HAS TO BE "galaxy_ps"!). Defaults to "galaxy_ps".
 
     Returns:
         total_loss (float or torch.Tensor): average loss corresponding to the net with bin_idx, or list of average loss for all sub-networks.
     """
 
     # if net_idx not specified, recursively call the function with all possible values
-    if bin_idx == None and mode == "galaxy_ps":
+    if bin_idx == None and emulator.model_type == "combined_tracer_transformer":
+        total_loss = torch.zeros(emulator.num_zbins, requires_grad=False)
+        for z in range(emulator.num_zbins):
+            total_loss[z] = calc_avg_loss(emulator, data_loader, loss_function, z, mode)
+        return total_loss
+    elif bin_idx == None:
         total_loss = torch.zeros(emulator.num_spectra, emulator.num_zbins, requires_grad=False)
         for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
             total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z], mode)
@@ -478,15 +482,21 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None, m
     
     emulator.galaxy_ps_model.eval()
     avg_loss = 0.
+
+    if emulator.model_type == "combined_tracer_transformer":
+        net_idx = bin_idx
+    else:
+        net_idx = (bin_idx[1] * emulator.num_spectra) + bin_idx[0]
     with torch.no_grad():
         for (i, batch) in enumerate(data_loader):
-            if mode == "galaxy_ps":
-                params = emulator.galaxy_ps_model.organize_parameters(batch[0])
-                params = normalize_cosmo_params(params, emulator.input_normalizations)
-                prediction = emulator.galaxy_ps_model.forward(params, (bin_idx[1] * emulator.num_spectra) + bin_idx[0])
-                target = torch.flatten(batch[1][:,bin_idx[0],bin_idx[1]], start_dim=1)
+            params = normalize_cosmo_params(batch[0], emulator.input_normalizations)
+            params = emulator.galaxy_ps_model.organize_parameters(params)
+            prediction = emulator.galaxy_ps_model.forward(params, net_idx)
+            if emulator.model_type == "combined_tracer_transformer":
+                target = torch.flatten(torch.transpose(batch[1][:,:,net_idx], 0, 1), 
+                                       start_dim=0, end_dim=1)
             else:
-                raise KeyError(f"Invalid value for mode ({mode})")
+                target = torch.flatten(batch[1][:,:,net_idx], start_dim=1)
 
             avg_loss += loss_function(prediction, target, emulator.invcov_blocks, True).item()
 
@@ -503,6 +513,7 @@ def normalize_cosmo_params(params:torch.Tensor, normalizations:torch.Tensor):
     Returns:
         norm_params (torch.Tensor): batch of normalized input parameters. has shape [batch, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)
     """
+
     return (params - normalizations[0]) / (normalizations[1] - normalizations[0])
 
 

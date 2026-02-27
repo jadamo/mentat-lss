@@ -1,0 +1,63 @@
+# directory that all other paths are relative to
+input_dir: /home/u12/jadamo/SPHEREx/spherex_emu/
+# file paths are relative w.r.t. the repository directory
+# Where to save the network
+save_dir: ./emulators/stacked_transformer_2t_2z_hypersphere/
+# Where your training set lives
+training_dir: ../../xdisk/training_set_eft_2t_2z_hypersphere/
+# Location of config file with cosmology + bias parameters
+# This file contains all of the parameter ranges
+cosmo_dir : ./configs/cosmo_pars/cosmo_pars_2t_2z.yaml
+sampling_type : hypersphere
+
+model_type : stacked_transformer
+loss_type : hyperbolic_chi2
+
+num_cosmo_params    : 5
+num_nuisance_params : 3 # <- per tracer
+num_tracers : 2
+num_zbins   : 2
+num_ells    : 2
+num_kbins   : 25
+
+# specifications are for each network - will be repeated for each sample / redshift bin
+galaxy_ps_emulator:
+  # mlp parameters
+  num_mlp_blocks      : 2
+  num_block_layers    : 5
+  use_skip_connection : True
+
+  # transformer parameters
+  num_transformer_blocks : 2
+  split_dim              : 5
+  split_size             : 20
+
+ps_nw_emulator:
+  num_kbins : 256
+  # mlp parameters
+  num_mlp_blocks      : 1
+  num_block_layers    : 4
+  use_skip_connection : True
+
+  # transformer parameters
+  num_transformer_blocks : 1
+  split_dim              : 4
+  split_size             : 64
+
+# Training parameters
+num_epochs: 500
+galaxy_ps_learning_rate: 0.005
+nw_ps_learning_rate : 0.0005
+batch_size: 1000
+training_set_fraction : 1.0
+early_stopping_epochs: 25
+weight_initialization: He
+optimizer_type : Adam
+
+# whether to re-calculate the training-set loss at the end of each epoch
+# Setting to true gives more accurate loss stats, but is slower
+# Validation set loss is not changed by this option
+recalculate_train_loss : False
+# whether to attempt training on GPU
+# NOTE: Small networks will possibly train faster on CPU!
+use_gpu : True

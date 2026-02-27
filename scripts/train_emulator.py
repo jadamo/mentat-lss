@@ -21,7 +21,7 @@ def main():
 
     # train on a single cpu / gpu
     if emulator.num_gpus < 2:
-        logger.info("Training network on device:", emulator.device.type)
+        logger.info(f"Training network on device: {emulator.device.type}")
         training_loops.train_on_single_device(emulator)
 
     # split the sub-networks to train on multiple gpus
