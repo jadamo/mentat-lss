@@ -8,6 +8,7 @@ import logging
 from mentat_lss.models import blocks
 from mentat_lss.models.stacked_mlp import stacked_mlp
 from mentat_lss.models.stacked_transformer import stacked_transformer
+from mentat_lss.models.combined_tracer_transformer import combined_tracer_transformer
 from mentat_lss.models.analytic_terms import analytic_eft_model
 from mentat_lss.dataset import pk_galaxy_dataset
 from mentat_lss.utils import load_config_file, get_parameter_ranges,\
@@ -272,6 +273,8 @@ class ps_emulator():
             self.galaxy_ps_model = stacked_mlp(self.config_dict).to(self.device)
         elif self.model_type == "stacked_transformer":
             self.galaxy_ps_model = stacked_transformer(self.config_dict).to(self.device)
+        elif self.model_type == "combined_tracer_transformer":
+            self.galaxy_ps_model = combined_tracer_transformer(self.config_dict).to(self.device)
         else:
             raise KeyError(f"Invalid value for model_type: {self.model_type}")
         
@@ -291,15 +294,17 @@ class ps_emulator():
         try:
             cosmo_dict = load_config_file(os.path.join(self.input_dir,self.cosmo_dir))
             param_names, param_bounds = get_parameter_ranges(cosmo_dict)
-            input_normalizations = torch.Tensor(param_bounds.T).to(self.device)
+            self.input_normalizations = torch.Tensor(param_bounds.T).to(self.device)
         except IOError:
-            input_normalizations = torch.vstack((torch.zeros((self.num_cosmo_params + (self.num_tracers*self.num_zbins*self.num_nuisance_params))),
+            self.input_normalizations = torch.vstack((torch.zeros((self.num_cosmo_params + (self.num_tracers*self.num_zbins*self.num_nuisance_params))),
                                                  torch.ones((self.num_cosmo_params + (self.num_tracers*self.num_zbins*self.num_nuisance_params))))).to(self.device)
             param_names, param_bounds = [], np.empty((self.num_cosmo_params + (self.num_tracers*self.num_zbins*self.num_nuisance_params), 2))
 
-        lower_bounds = self.galaxy_ps_model.organize_parameters(input_normalizations[0].unsqueeze(0))
-        upper_bounds = self.galaxy_ps_model.organize_parameters(input_normalizations[1].unsqueeze(0))
-        self.input_normalizations = torch.vstack([lower_bounds, upper_bounds])
+        # lower_bounds = self.galaxy_ps_model.organize_parameters(input_normalizations[0].unsqueeze(0))
+        # upper_bounds = self.galaxy_ps_model.organize_parameters(input_normalizations[1].unsqueeze(0))
+
+        # self.input_normalizations = torch.vstack([lower_bounds, upper_bounds])
+        # print(self.input_normalizations.shape, lower_bounds.shape)
         self.required_emu_params = param_names
         self.emu_param_bounds = torch.from_numpy(param_bounds).to(torch.float32).to(self.device)
 
@@ -404,27 +409,36 @@ class ps_emulator():
     def _init_training_stats(self):
         """initializes training data as nested lists with dims [nps, nz]"""
 
-        self.train_loss = [[[] for i in range(self.num_zbins)] for j in range(self.num_spectra)]
-        self.valid_loss = [[[] for i in range(self.num_zbins)] for j in range(self.num_spectra)]
+        if self.model_type == "combined_tracer_transformer":
+            num_nets = self.num_zbins
+        else:
+            num_nets = self.num_spectra * self.num_zbins
+
+        self.train_loss = [[] for i in range(num_nets)]
+        self.valid_loss = [[] for i in range(num_nets)]
         self.train_time = 0.
 
 
     def _init_optimizer(self):
         """Sets optimization objects, one for each sub-network"""
 
-        self.optimizer = [[[] for i in range(self.num_zbins)] for j in range(self.num_spectra)]
-        self.scheduler = [[[] for i in range(self.num_zbins)] for j in range(self.num_spectra)]
-        for (ps, z) in itertools.product(range(self.num_spectra), range(self.num_zbins)):
-            net_idx = (z * self.num_spectra) + ps
+        if self.model_type == "combined_tracer_transformer":
+            num_nets = self.num_zbins
+        else:
+            num_nets = self.num_spectra * self.num_zbins
+
+        self.optimizer = [None for i in range(num_nets)]
+        self.scheduler = [None for i in range(num_nets)]
+        for net_idx in range(num_nets):
             if self.optimizer_type == "Adam":
-                self.optimizer[ps][z] = torch.optim.Adam(self.galaxy_ps_model.networks[net_idx].parameters(), 
-                                                         lr=self.galaxy_ps_learning_rate)
+                self.optimizer[net_idx] = torch.optim.Adam(self.galaxy_ps_model.networks[net_idx].parameters(), 
+                                                        lr=self.galaxy_ps_learning_rate)
             else:
                 raise KeyError("Error! Invalid optimizer type specified!")
 
             # use an adaptive learning rate
-            self.scheduler[ps][z] = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer[ps][z],
-                                    "min", factor=0.1, patience=15)
+            self.scheduler[net_idx] = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer[net_idx],
+                                "min", factor=0.1, patience=15)
 
 
     def _update_checkpoint(self, net_idx=0, mode="galaxy_ps"):
@@ -456,11 +470,11 @@ class ps_emulator():
         if not os.path.exists(training_data_dir):
             os.mkdir(training_data_dir)
 
-        for (ps, z) in itertools.product(range(self.num_spectra), range(self.num_zbins)):
-            training_data = torch.vstack([torch.Tensor(self.train_loss[ps][z]), 
-                                          torch.Tensor(self.valid_loss[ps][z]),
-                                          torch.Tensor([self.train_time]*len(self.valid_loss[ps][z]))])
-            torch.save(training_data, os.path.join(training_data_dir, "train_data_"+str(ps)+"_"+str(z)+".dat"))
+        for net_idx in range(len(self.optimizer)):
+            training_data = torch.vstack([torch.Tensor(self.train_loss[net_idx]), 
+                                          torch.Tensor(self.valid_loss[net_idx]),
+                                          torch.Tensor([self.train_time]*len(self.valid_loss[net_idx]))])
+            torch.save(training_data, os.path.join(training_data_dir, "train_data_"+str(net_idx)+".dat"))
         
         # configuration data
         with open(os.path.join(save_dir, 'config.yaml'), 'w') as outfile:
@@ -500,14 +514,12 @@ class ps_emulator():
         if params.shape[1] > len(self.required_emu_params):
             params = params[:, :len(self.required_emu_params)]
 
-        org_params = self.galaxy_ps_model.organize_parameters(params)
-
         # TODO: Better handling with batch of parameters
         # Right now, this if-statement will trigger if any of the batch of parameters
         # are out of bounds
         if (self.sampling_type == "hypercube" and \
-            torch.any(org_params < self.input_normalizations[0]) or \
-            torch.any(org_params > self.input_normalizations[1])) or \
+            torch.any(params < self.input_normalizations[0]) or \
+            torch.any(params > self.input_normalizations[1])) or \
            (self.sampling_type == "hypersphere" and \
             not torch.any(is_in_hypersphere(self.emu_param_bounds, params)[0])):
             if extrapolate:
@@ -516,8 +528,9 @@ class ps_emulator():
                 self.logger.info("Input parameters out of bounds! Skipping emulation...")
                 skip_emulation = True
 
-        norm_params = normalize_cosmo_params(org_params, self.input_normalizations)
-        return norm_params, skip_emulation
+        norm_params = normalize_cosmo_params(params, self.input_normalizations)
+        org_norm_params = self.galaxy_ps_model.organize_parameters(norm_params)
+        return org_norm_params, skip_emulation
 
     def _check_training_set(self, data:pk_galaxy_dataset):
         """checks that loaded-in data for training / validation / testing is compatable with the given network config
