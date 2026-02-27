@@ -37,8 +37,7 @@ def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.dat
         prediction = emulator.galaxy_ps_model.forward(params, net_idx)
         
         if emulator.model_type == "combined_tracer_transformer":
-            target = torch.flatten(torch.transpose(batch[1][:,:,net_idx], 0, 1), 
-                                   start_dim=0, end_dim=1)
+            target = torch.flatten(batch[1][:,:,net_idx], start_dim=0, end_dim=1)
         else:
             target = torch.flatten(batch[1][:,ps_idx,z_idx], start_dim=1)
 
@@ -119,13 +118,13 @@ def train_on_single_device(emulator:ps_emulator):
                 epochs_since_update[net_idx] += 1
 
             if emulator.model_type == "combined_tracer_transformer":
-                emulator.logger.info("Net idx : {:d}, Epoch : {:d}, avg train loss: {:0.4e}\t avg validation loss: {:0.4e}\t ({:0.0f})".format(
-                    net_idx, epoch, emulator.train_loss[net_idx][-1], emulator.valid_loss[net_idx][-1], epochs_since_update[net_idx]))
+                net_id_str = f"{net_idx}"
             else:
-                emulator.logger.info("Net idx : [{:d}, {:d}], Epoch : {:d}, avg train loss: {:0.4e}\t avg validation loss: {:0.4e}\t ({:0.0f})".format(
-                    ps, z, epoch, emulator.train_loss[net_idx][-1], emulator.valid_loss[net_idx][-1], epochs_since_update[net_idx]))
+                net_id_str = f"[{ps}, {z}]"
+            emulator.logger.info(f"Net idx : {net_id_str}, Epoch : {epoch}, avg train loss: {emulator.train_loss[net_idx][-1]:0.4e}\t avg validation loss: {emulator.valid_loss[net_idx][-1]:0.4e}\t ({epochs_since_update[net_idx]})")
+            
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
-                emulator.logger.info("Model [{:d}, {:d}] has not impvored for {:0.0f} epochs. Initiating early stopping...".format(ps, z, epochs_since_update[net_idx]))
+                emulator.logger.info(f"Model {net_id_str} has not impvored for {epochs_since_update[net_idx]} epochs. Initiating early stopping...")
 
 
 def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
@@ -153,8 +152,9 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     train_loader = emulator.load_data("training", emulator.training_set_fraction)
     valid_loader = emulator.load_data("validation")
 
-    best_loss           = [torch.inf for i in range(emulator.num_zbins*emulator.num_spectra + 1)]
-    epochs_since_update = [0 for i in range(emulator.num_zbins*emulator.num_spectra + 1)]
+    num_nets = len(emulator.train_loss)
+    best_loss           = [torch.inf for i in range(num_nets)]
+    epochs_since_update = [0 for i in range(num_nets)]
     emulator._init_training_stats()
     emulator._init_optimizer()
 
@@ -164,32 +164,40 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     # loop thru epochs
     for epoch in range(emulator.num_epochs):
         # loop thru individual networks
-        for (ps, z) in net_indeces[gpu_id]:
-            net_idx = int((z * emulator.num_spectra) + ps)
+        for bin_idx in net_indeces[gpu_id]:
+            if emulator.model_type != "combined_tracer_transformer":
+                ps = bin_idx[0]
+                z = bin_idx[1]
+                net_idx = (z * emulator.num_spectra) + ps
+            else:
+                net_idx = bin_idx
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
                 continue
 
             training_loss = train_galaxy_ps_one_epoch(emulator, train_loader, [ps, z])
             if emulator.recalculate_train_loss:
-                emulator.train_loss[ps][z].append(calc_avg_loss(emulator, train_loader, emulator.loss_function, [ps, z]))
+                emulator.train_loss[net_idx].append(calc_avg_loss(emulator, train_loader, emulator.loss_function, bin_idx))
             else:
-                emulator.train_loss[ps][z].append(training_loss)
-            emulator.valid_loss[ps][z].append(calc_avg_loss(emulator, valid_loader, emulator.loss_function, [ps, z]))
+                emulator.train_loss[net_idx].append(training_loss)
+            emulator.valid_loss[net_idx].append(calc_avg_loss(emulator, valid_loader, emulator.loss_function, bin_idx))
             
-            emulator.scheduler[ps][z].step(emulator.valid_loss[ps][z][-1])
+            emulator.scheduler[net_idx].step(emulator.valid_loss[net_idx][-1])
             emulator.train_time = time.time() - start_time
 
-            if emulator.valid_loss[ps][z][-1] < best_loss[net_idx]:
-                best_loss[net_idx] = emulator.valid_loss[ps][z][-1]
+            if emulator.valid_loss[net_idx][-1] < best_loss[net_idx]:
+                best_loss[net_idx] = emulator.valid_loss[net_idx][-1]
                 epochs_since_update[net_idx] = 0
                 emulator._update_checkpoint(net_idx, "galaxy_ps")
             else:
                 epochs_since_update[net_idx] += 1
 
-            emulator.logger.info("Net idx : [{:d}, {:d}], Epoch : {:d}, avg train loss: {:0.4e}\t avg validation loss: {:0.4e}\t ({:0.0f})".format(
-                ps, z, epoch, emulator.train_loss[ps][z][-1], emulator.valid_loss[ps][z][-1], epochs_since_update[net_idx]))
+            if emulator.model_type == "combined_tracer_transformer":
+                net_id_str = f"{net_idx}"
+            else:
+                net_id_str = f"[{ps}, {z}]"
+            emulator.logger.info(f"Net idx : {net_id_str}, Epoch : {epoch}, avg train loss: {emulator.train_loss[net_idx][-1]:0.4e}\t avg validation loss: {emulator.valid_loss[net_idx][-1]:0.4e}\t ({epochs_since_update[net_idx]})")
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
-                emulator.logger.info("Model [{:d}, {:d}] has not impvored for {:0.0f} epochs. Initiating early stopping...".format(ps, z, epochs_since_update[net_idx]))
+                emulator.logger.info(f"Model {net_id_str} has not improved for {epochs_since_update[net_idx]} epochs. Initiating early stopping...")
 
         if gpu_id == 0 and epoch % 5 == 0 and epoch > 0:
             emulator.logger.info("Checkpointing progress from all devices...")

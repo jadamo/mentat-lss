@@ -150,10 +150,16 @@ def test_combined_tracer_transformer_forward():
     test_input = torch.randn(2, test_emulator.num_cosmo_params + \
                                 (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
                                 device = test_emulator.device)
+    test_input_2 = torch.randn(2, test_emulator.num_cosmo_params + \
+                                (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
+                                device = test_emulator.device)
+
     test_emulator.galaxy_ps_model.eval()
     test_input = test_emulator.galaxy_ps_model.organize_parameters(test_input)
+    test_input_2 = test_emulator.galaxy_ps_model.organize_parameters(test_input_2)
     test_output_sub = test_emulator.galaxy_ps_model.forward(test_input, 0)
     test_output_full = test_emulator.galaxy_ps_model.forward(test_input)
+    test_output_full_2 = test_emulator.galaxy_ps_model.forward(test_input_2)
 
     assert test_output_sub.shape == (2*test_emulator.num_spectra, test_emulator.num_kbins * test_emulator.num_ells)
     assert test_output_full.shape == (2*test_emulator.num_spectra,
@@ -162,3 +168,6 @@ def test_combined_tracer_transformer_forward():
 
     assert torch.all(torch.isnan(test_output_full)) == False
     assert torch.all(torch.isinf(test_output_full)) == False
+
+    # outputs for different inputs should not be the same
+    assert torch.allclose(test_output_full, test_output_full_2) == False
