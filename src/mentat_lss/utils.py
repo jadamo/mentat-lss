@@ -472,12 +472,12 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
     if bin_idx == None and emulator.model_type == "combined_tracer_transformer":
         total_loss = torch.zeros(emulator.num_zbins, requires_grad=False)
         for z in range(emulator.num_zbins):
-            total_loss[z] = calc_avg_loss(emulator, data_loader, loss_function, z, mode)
+            total_loss[z] = calc_avg_loss(emulator, data_loader, loss_function, z)
         return total_loss
     elif bin_idx == None:
         total_loss = torch.zeros(emulator.num_spectra, emulator.num_zbins, requires_grad=False)
         for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
-            total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z], mode)
+            total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z])
         return total_loss
     
     emulator.galaxy_ps_model.eval()
@@ -493,10 +493,9 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
             params = emulator.galaxy_ps_model.organize_parameters(params)
             prediction = emulator.galaxy_ps_model.forward(params, net_idx)
             if emulator.model_type == "combined_tracer_transformer":
-                target = torch.flatten(torch.transpose(batch[1][:,:,net_idx], 0, 1), 
-                                       start_dim=0, end_dim=1)
+                target = torch.flatten(batch[1][:,:,net_idx], start_dim=0, end_dim=1)
             else:
-                target = torch.flatten(batch[1][:,:,net_idx], start_dim=1)
+                target = torch.flatten(batch[1][:,:,net_idx[0], net_idx[1]], start_dim=1)
 
             avg_loss += loss_function(prediction, target, emulator.invcov_blocks, True).item()
 
@@ -540,7 +539,7 @@ def un_normalize_power_spectrum(ps_raw:torch.Tensor, ps_fid:torch.Tensor, sqrt_e
     """Reverses normalization of a batch of output power spectru based on the method developed by http://arxiv.org/abs/2403.12337
 
     Args:
-        ps (torch.Tensor): power spectrum to reverse normalization. Expected shape is either [nb, nps, nz, nk*nl] or [nb, 1, nk*nl]  
+        ps (torch.Tensor): power spectrum to reverse normalization. Expected shape is either [nb, nps, nz, nk*nl] or [nps, nz, nk*nl]  
         ps_fid (torch.Tensor): fiducial power spectrum used to reverse normalization. Expected shape is [nps*nz, nk*nl]  
         sqrt_eigvals (torch.Tensor): square root eigenvalues of the inverse covariance matrix. Expected shape is [nps*nz, nk*nl]  
         Q (torch.Tensor): eigenvectors of the inverse covariance matrix. Expected shape is [nps*nz, nk*nl, nk*nl]  

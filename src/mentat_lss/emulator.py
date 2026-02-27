@@ -199,7 +199,9 @@ class ps_emulator():
             if raw_output:
                 return galaxy_ps
 
-            galaxy_ps = un_normalize_power_spectrum(torch.flatten(galaxy_ps, start_dim=3), self.ps_fid, self.sqrt_eigvals, self.Q, self.Q_inv)
+            if self.model_type != "combined_tracer_transformer":
+                galaxy_ps = torch.flatten(galaxy_ps, start_dim=3)
+            galaxy_ps = un_normalize_power_spectrum(galaxy_ps, self.ps_fid, self.sqrt_eigvals, self.Q, self.Q_inv)
 
             if len(params.shape) == 1:
                 galaxy_ps = galaxy_ps.view(self.num_spectra, self.num_zbins, self.num_kbins, self.num_ells)
@@ -570,7 +572,10 @@ def compile_multiple_device_training_results(save_dir:str, config_dir:str, num_g
     full_emulator = ps_emulator(config_dir, "train")
     full_emulator.galaxy_ps_model.eval()
 
-    net_idx = torch.Tensor(list(itertools.product(range(full_emulator.num_spectra), range(full_emulator.num_zbins)))).to(int)
+    if full_emulator.model_type == "combined_tracer_transformer":
+        net_idx = torch.Tensor(list(range(full_emulator.num_zbins))).to(int)
+    else:
+        net_idx = torch.Tensor(list(itertools.product(range(full_emulator.num_spectra), range(full_emulator.num_zbins)))).to(int)
     split_indices = net_idx.chunk(num_gpus)
 
     full_emulator.train_loss = torch.zeros((full_emulator.num_spectra, full_emulator.num_zbins, full_emulator.num_epochs))
@@ -589,15 +594,18 @@ def compile_multiple_device_training_results(save_dir:str, config_dir:str, num_g
             full_emulator.ndens = ps_properties["ndens"]
 
         # galaxy power spectrum networks
-        for (ps, z) in split_indices[n]:
-            net_idx = (z * full_emulator.num_spectra) + ps
+        for idx in split_indices[n]:
+            if full_emulator.model_type == "combined_tracer_transformer":
+                net_idx = idx
+            else:
+                net_idx = (idx[1] * full_emulator.num_spectra) + idx[0]
             full_emulator.galaxy_ps_model.networks[net_idx] = seperate_network.galaxy_ps_model.networks[net_idx]
 
-            train_data = torch.load(os.path.join(save_dir,sub_dir,"training_statistics/train_data_"+str(int(ps))+"_"+str(int(z))+".dat"), weights_only=True)
+            train_data = torch.load(os.path.join(save_dir,sub_dir,"training_statistics/train_data_"+str(int(net_idx))+".dat"), weights_only=True)
             epochs = train_data.shape[1]
 
-            full_emulator.train_loss[ps, z, :epochs] = train_data[0,:]
-            full_emulator.valid_loss[ps, z, :epochs] = train_data[1,:]
+            full_emulator.train_loss[net_idx, :epochs] = train_data[0,:]
+            full_emulator.valid_loss[net_idx, :epochs] = train_data[1,:]
             full_emulator.train_time = train_data[2,0]
 
     full_emulator.galaxy_ps_checkpoint = copy.deepcopy(full_emulator.galaxy_ps_model.state_dict())
