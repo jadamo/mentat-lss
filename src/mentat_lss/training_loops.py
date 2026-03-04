@@ -152,10 +152,10 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     train_loader = emulator.load_data("training", emulator.training_set_fraction)
     valid_loader = emulator.load_data("validation")
 
+    emulator._init_training_stats()
     num_nets = len(emulator.train_loss)
     best_loss           = [torch.inf for i in range(num_nets)]
     epochs_since_update = [0 for i in range(num_nets)]
-    emulator._init_training_stats()
     emulator._init_optimizer()
 
     emulator.galaxy_ps_model.train()
@@ -174,7 +174,7 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
                 continue
 
-            training_loss = train_galaxy_ps_one_epoch(emulator, train_loader, [ps, z])
+            training_loss = train_galaxy_ps_one_epoch(emulator, train_loader, bin_idx)
             if emulator.recalculate_train_loss:
                 emulator.train_loss[net_idx].append(calc_avg_loss(emulator, train_loader, emulator.loss_function, bin_idx))
             else:

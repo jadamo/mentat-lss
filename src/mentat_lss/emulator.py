@@ -473,7 +473,11 @@ class ps_emulator():
         if not os.path.exists(training_data_dir):
             os.mkdir(training_data_dir)
 
-        for net_idx in range(len(self.optimizer)):
+        if self.model_type == "combined_tracer_transformer":
+            num_nets = self.num_zbins
+        else:
+            num_nets = self.num_zbins * self.num_spectra
+        for net_idx in range(num_nets):
             training_data = torch.vstack([torch.Tensor(self.train_loss[net_idx]), 
                                           torch.Tensor(self.valid_loss[net_idx]),
                                           torch.Tensor([self.train_time]*len(self.valid_loss[net_idx]))])
@@ -575,12 +579,14 @@ def compile_multiple_device_training_results(save_dir:str, config_dir:str, num_g
 
     if full_emulator.model_type == "combined_tracer_transformer":
         net_idx = torch.Tensor(list(range(full_emulator.num_zbins))).to(int)
+        num_nets = full_emulator.num_zbins
     else:
         net_idx = torch.Tensor(list(itertools.product(range(full_emulator.num_spectra), range(full_emulator.num_zbins)))).to(int)
+        num_nets = full_emulator.num_zbins * full_emulator.num_spectra
     split_indices = net_idx.chunk(num_gpus)
 
-    full_emulator.train_loss = torch.zeros((full_emulator.num_spectra, full_emulator.num_zbins, full_emulator.num_epochs))
-    full_emulator.valid_loss = torch.zeros((full_emulator.num_spectra, full_emulator.num_zbins, full_emulator.num_epochs))
+    full_emulator.train_loss = torch.zeros((num_nets, full_emulator.num_epochs))
+    full_emulator.valid_loss = torch.zeros((num_nets, full_emulator.num_epochs))
     full_emulator.train_time = 0.
     for n in range(num_gpus):
         sub_dir = "rank_"+str(n)
