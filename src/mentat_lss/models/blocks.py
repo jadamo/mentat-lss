@@ -77,13 +77,13 @@ class block_resnet(nn.Module):
         self.layers.add_module("layer0",    nn.Linear(input_dim, output_dim))
         self.layers.add_module("Activation", activation_function(output_dim))
         for i in range(num_layers-1):
-            self.layers.add_module("layer"+str(i+1), nn.Linear(output_dim, output_dim))
-            self.layers.add_module("bn"+str(i+1),    nn.BatchNorm1d(output_dim))
-            self.layers.add_module("Activation",     activation_function(output_dim))
+            self.layers.add_module("layer"+str(i+1),      nn.Linear(output_dim, output_dim))
+            self.layers.add_module("bn"+str(i+1),         nn.LayerNorm(output_dim))
+            self.layers.add_module("Activation"+str(i+1), activation_function(output_dim))
     
         if skip_connection:
             self.skip_layer = nn.Linear(input_dim, output_dim)
-            self.bn = nn.BatchNorm1d(output_dim)
+            self.bn = nn.LayerNorm(output_dim)
 
     def forward(self, X:torch.Tensor):
         """Passes through the block
