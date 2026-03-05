@@ -200,7 +200,10 @@ class ps_emulator():
             if raw_output:
                 return galaxy_ps
 
-            if self.model_type != "combined_tracer_transformer":
+            if self.model_type == "combined_tracer_transformer":
+                batch_size = params.shape[0] if len(params.shape) > 1 else 1
+                galaxy_ps = galaxy_ps.reshape(batch_size, self.num_spectra, self.num_zbins, self.num_kbins * self.num_ells)
+            else:
                 galaxy_ps = torch.flatten(galaxy_ps, start_dim=3)
             galaxy_ps = un_normalize_power_spectrum(galaxy_ps, self.ps_fid, self.sqrt_eigvals, self.Q, self.Q_inv)
 
@@ -449,7 +452,7 @@ class ps_emulator():
         if mode == "galaxy_ps":
             new_checkpoint = self.galaxy_ps_model.state_dict()
             for name in new_checkpoint.keys():
-                if "networks."+str(net_idx) in name:
+                if f"networks.{int(net_idx)}." in name:
                     self.galaxy_ps_checkpoint[name] = new_checkpoint[name]
         else:
             raise NotImplementedError
