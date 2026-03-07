@@ -21,7 +21,8 @@ dependencies = [
     "pytest",
     "tqdm",
     "pyyaml",
-    "colossus"
+    "colossus",
+    "optuna"
 ]
 
 [tool.setuptools.packages.find]
