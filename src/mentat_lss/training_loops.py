@@ -4,6 +4,7 @@ import itertools
 import logging
 import os
 
+import optuna
 from mentat_lss.emulator import ps_emulator, compile_multiple_device_training_results
 from mentat_lss.utils import calc_avg_loss, normalize_cosmo_params
 
@@ -61,11 +62,13 @@ def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.dat
     return (total_loss / len(train_loader.dataset))
 
 
-def train_on_single_device(emulator:ps_emulator):
+def train_on_single_device(emulator:ps_emulator, trial=None):
     """Trains the emulator on a single device (cpu or gpu)
 
     Args:
         emulator (ps_emulator): network object to train.
+        trial (optuna.trial.Trial, optional): If not None, the current trial informaiton
+            from optuna. Default None
     """
 
     # load training / validation datasets
@@ -126,6 +129,11 @@ def train_on_single_device(emulator:ps_emulator):
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
                 emulator.logger.info(f"Model {net_id_str} has not impvored for {epochs_since_update[net_idx]} epochs. Initiating early stopping...")
 
+        if trial != None:
+            accuracy = torch.mean([emulator.valid_loss[net_idx][-1] for net_idx in range(len(emulator.valid_loss))])
+            trial.report(accuracy, epoch)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
 
 def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     """Trains the given network on multiple gpu devices by splitting.
