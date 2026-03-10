@@ -10,22 +10,24 @@ import mentat_lss.training_loops as training_loops
 from mentat_lss.utils import load_config_file
 from mentat_lss.emulator import ps_emulator
 
-def create_cache():
-    if not os.path.exists("cache"):
-        os.mkdir("cache")
+def create_cache(node_id=0):
+    cache_dir = f"cache_node{node_id}"
+    if not os.path.exists(cache_dir):
+        os.mkdir(cache_dir)
 
-def clean_cache():
-    if os.path.exists("cache"):
-        shutil.rmtree("cache")
+def clean_cache(node_id=0):
+    cache_dir = f"cache_node{node_id}"
+    if os.path.exists(cache_dir):
+        shutil.rmtree(cache_dir)
 
-def define_model(trial, default_config_file, device=None):
+def define_model(trial, node_id, default_config_file, device=None):
 
     trial_config_file = default_config_file.copy()
 
     num_mlp_blocks = trial.suggest_int("num_mlp_blocks", 1, 6)
-    num_transformer_blocks = trial.suggest_int("num_transformer_blocks", 1, 3)
-    num_block_layers = trial.suggest_int("num_block_layers", 1, 6)
-    batch_size = trial.suggest_int("batch_size", 50, 500)
+    num_transformer_blocks = trial.suggest_int("num_transformer_blocks", 0, 1)
+    num_block_layers = trial.suggest_int("num_block_layers", 2, 6)
+    batch_size = trial.suggest_int("batch_size", 100, 1000)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2)
 
     trial_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = num_mlp_blocks
@@ -36,7 +38,8 @@ def define_model(trial, default_config_file, device=None):
     # to save time, only train with 10% of the full data
     trial_config_file["training_set_fraction"] = 0.1
 
-    file_path = os.path.join("cache", f'config_{trial.number}.yaml')
+    cache_dir = f"cache_node{node_id}"
+    file_path = os.path.join(cache_dir, f'config_{trial.number}.yaml')
     with open(file_path, 'w') as outfile:
         yaml.dump(dict(trial_config_file), outfile, sort_keys=False, default_flow_style=False)
 
@@ -58,8 +61,8 @@ def save_best_params(save_loc, default_config_file, best_params):
     with open(file_path, 'w') as outfile:
         yaml.dump(dict(best_config_file), outfile, sort_keys=False, default_flow_style=False)
 
-def objective(trial, default_config_file, device=None):
-    emulator = define_model(trial, default_config_file, device)
+def objective(trial, node_id, default_config_file, device=None):
+    emulator = define_model(trial, node_id, default_config_file, device)
 
     training_loops.train_on_single_device(emulator)
 
@@ -74,14 +77,19 @@ def objective(trial, default_config_file, device=None):
 
     return result
 
-def run_worker(gpu_id, default_config_file, n_trials, max_time, db_path):
+def run_worker(node_id, gpu_id, default_config_file, n_trials, max_time, db_path):
+    
     device = torch.device(f"cuda:{gpu_id}")
+    storage = optuna.storages.RDBStorage(
+        url=f"sqlite:///{db_path}",
+        engine_kwargs={"connect_args": {"timeout": 30}}  # wait up to 30s for lock
+    )
     study = optuna.load_study(
         study_name="combined_tracer",
-        storage=f"sqlite:///{db_path}"
+        storage=storage
     )
     study.optimize(
-        lambda trial: objective(trial, default_config_file, device),
+        lambda trial: objective(trial, node_id, default_config_file, device),
         n_trials=n_trials,
         timeout=max_time
     )
@@ -97,12 +105,21 @@ def main():
         "n_trials", type=int, default=None,
         help="<Required> number of trials to execute by Optuna."
     )
+    parser.add_argument(
+        "--db-path", type=str, default="optuna_results.db",
+        help="Path to Optuna SQLite DB. Must be on a shared filesystem for multi-node."
+    )
     command_line_args = parser.parse_args()
 
     logging.basicConfig(level = logging.INFO)
     logger = logging.getLogger("")
-    num_gpus = torch.cuda.device_count()
-    db_path = "optuna_results.db"
+    try:
+        node_id = int(os.environ.get("SLURM_NODEID", 0))
+    except (ValueError, TypeError):
+        node_id = 0
+        logger.warning("Failed to parse SLURM_NODEID, defaulting to 0")
+    num_gpus = torch.cuda.device_count() # <- GPUs on the given node
+    db_path = command_line_args.db_path
 
     # Create study once (workers load it)
     optuna.create_study(
@@ -113,9 +130,11 @@ def main():
         load_if_exists=True
     )
 
-    create_cache()
+    logger.info(f"Node {node_id} creating cache directory...")
+    create_cache(node_id)
+
     default_config_file = load_config_file(command_line_args.config_file)
-    max_time = 3 * 24 * 60 * 60 # <- max of 2 hours
+    max_time = int(2.9 * 24 * 60 * 60) # <- max of 3 days
 
     if num_gpus < 2:
         # Single GPU / CPU fallback
@@ -123,31 +142,35 @@ def main():
         logger.info(f"Running trials on device {device}")
         study = optuna.load_study(study_name="combined_tracer", storage=f"sqlite:///{db_path}")
         study.optimize(
-            lambda trial: objective(trial, default_config_file, device),
+            lambda trial: objective(trial, node_id, default_config_file, device),
             n_trials=command_line_args.n_trials,
             timeout=max_time
         )
     else:
         import torch.multiprocessing as mp
+        logger.info(f"Running trials on {num_gpus} GPUs with multiprocessing...")
+        gpu_id = range(num_gpus)
         mp.set_start_method("spawn", force=True)
         mp.spawn(
             run_worker,
-            args=(default_config_file, command_line_args.n_trials // num_gpus, max_time, db_path),
+            args=(node_id, gpu_id, default_config_file, command_line_args.n_trials // num_gpus, max_time, db_path),
             nprocs=num_gpus,
             join=True
         )
     study = optuna.load_study(study_name="combined_tracer", storage=f"sqlite:///{db_path}")
 
-    print("Best trial:")
-    trial = study.best_trial
-    print("  Value: ", trial.value)
+    if node_id == 0:
+        print("Best trial:")
+        trial = study.best_trial
+        print("  Value: ", trial.value)
 
-    print("  Params: ")
-    for key, value in trial.params.items():
-        print(f"    {key}: {value}")
+        print("  Params: ")
+        for key, value in trial.params.items():
+            print(f"    {key}: {value}")
 
-    save_best_params(command_line_args.config_file, default_config_file, trial.params)
-    clean_cache()
+        save_best_params(command_line_args.config_file, default_config_file, trial.params)
+    
+    clean_cache(node_id)
 
 if __name__ == "__main__":
     main()
