@@ -16,21 +16,21 @@ class single_zbin_transformer(nn.Module):
         """
         super().__init__()
 
-        # TODO: Allow specification of activation function        
+        # TODO: Allow specification of activation function
         self.num_ells = config_dict["num_ells"]
         self.num_kbins = config_dict["num_kbins"]
         self.num_nuisance_params = config_dict["num_nuisance_params"]
 
-        self.input_dim = config_dict["num_cosmo_params"] + (2 * config_dict["num_nuisance_params"])
-        self.output_dim = self.num_ells * self.num_kbins
         num_spectra = config_dict["num_tracers"] + math.comb(config_dict["num_tracers"], 2)
+        spectrum_embed_dim = config_dict["galaxy_ps_emulator"].get("spectrum_embed_dim", 8)
 
-        # Fixed one-hot offset per spectrum type, added to input before the first linear layer.
-        # Shape [num_spectra, input_dim]: row s has a 1 in position s, 0s elsewhere.
-        spectrum_bias = torch.zeros(num_spectra, self.input_dim)
-        spectrum_bias[:, :num_spectra] = torch.eye(num_spectra)
-        self.register_buffer("spectrum_bias", spectrum_bias)
-        
+        # Learned spectrum-type embedding, concatenated to the physical parameters.
+        # This cleanly separates spectrum identity from the physical parameter values.
+        self.spectrum_embedding = nn.Embedding(num_spectra, spectrum_embed_dim)
+
+        self.input_dim = config_dict["num_cosmo_params"] + (2 * config_dict["num_nuisance_params"]) + spectrum_embed_dim
+        self.output_dim = self.num_ells * self.num_kbins
+
         # mlp blocks
         self.input_layer = nn.Linear(self.input_dim, self.output_dim)
         self.mlp_blocks = nn.Sequential()
@@ -62,7 +62,7 @@ class single_zbin_transformer(nn.Module):
 
         X = input_params
         if spectrum_indices is not None:
-            X = X + self.spectrum_bias[spectrum_indices]
+            X = torch.cat([X, self.spectrum_embedding(spectrum_indices)], dim=-1)
         X = self.input_layer(X)
         X = self.mlp_blocks(X)
         X = self.embedding_layer(X)
@@ -106,6 +106,8 @@ class combined_tracer_transformer(nn.Module):
         pairs = [(i1, i2) for i1, i2 in itertools.product(range(self.num_tracers), repeat=2) if i1 <= i2]
         self.register_buffer("_tracer_idx1", torch.tensor([p[0] for p in pairs], dtype=torch.long))
         self.register_buffer("_tracer_idx2", torch.tensor([p[1] for p in pairs], dtype=torch.long))
+        # Mask to zero the second nuisance block for auto-spectra (where both tracers are identical)
+        self.register_buffer("_is_auto_spectrum", torch.tensor([p[0] == p[1] for p in pairs]))
 
     def organize_parameters(self, input_params):
         """Organizes input cosmology + bias parameters by redshift only and treats spectra
@@ -137,6 +139,10 @@ class combined_tracer_transformer(nn.Module):
         # Index nuisance by tracer pair → [batch, nz, num_spectra, nn] → [batch, num_spectra, nz, nn]
         nus1 = nuisance[:, :, self._tracer_idx1, :].permute(0, 2, 1, 3)
         nus2 = nuisance[:, :, self._tracer_idx2, :].permute(0, 2, 1, 3)
+        
+        # Zero the second nuisance block for auto-spectra so the network receives
+        # an explicit zero signal rather than a redundant copy of nus1.
+        nus2 = nus2 * (~self._is_auto_spectrum)[None, :, None, None]
 
         # Concatenate along param dim and flatten batch × spectrum → [batch*num_spectra, nz, nc+2*nn]
         organized_params = torch.cat([cosmo, nus1, nus2], dim=-1)

@@ -41,6 +41,10 @@ class ps_emulator():
 
         self.logger = logging.getLogger('ps_emulator')
 
+        # Infers the number of k-bins, z-bins, tracers, and ells from the training data if not provided
+        if np.any([key not in self.config_dict for key in ["num_kbins", "num_ells", "num_zbins", "num_tracers"]]):
+            self._load_ps_properties(os.path.join(self.config_dict["input_dir"], self.config_dict["training_dir"]))
+
         # load dictionary entries into their own class variables
         for key in self.config_dict:
             setattr(self, key, self.config_dict[key])
@@ -66,6 +70,23 @@ class ps_emulator():
         else:
             raise KeyError(f"Invalid mode specified! Must be one of ['train', 'eval'] but was {mode}.")
 
+    def _load_ps_properties(self, path):
+        """loads the k-bins, z-bins, and effective redshifts of the power spectrum training data from file. 
+        This is used to check compatibility of the emulator with the training data, and to load in the effective redshifts for use in the analytic model.
+
+        Args:
+            path (str): the directory+filename of the ps_properties.npz file to load
+        Raises:
+            IOError: if no ps_properties.npz file is found at the given path
+        """
+
+        ps_properties = np.load(os.path.join(path, "ps_properties.npz"))
+        self.config_dict["num_kbins"] = len(ps_properties["k"])
+        self.config_dict["num_ells"] = len(ps_properties["ells"])
+        self.config_dict["num_zbins"] = len(ps_properties["z_eff"])
+        self.config_dict["num_tracers"] = len(ps_properties["ndens"])
+
+        self.logger.info(f"Emulator using {self.config_dict['num_kbins']} k-bins, {self.config_dict['num_ells']} ells, {self.config_dict['num_zbins']} z-bins, and {self.config_dict['num_tracers']} tracers (based on loaded ps_properties.npz file)")
 
     def load_trained_model(self, path):
         """loads the pre-trained network from file into the current model, as well as all relavent information needed for normalization.
@@ -80,17 +101,17 @@ class ps_emulator():
         self.galaxy_ps_model.load_state_dict(torch.load(os.path.join(path,'network_galaxy.params'), 
                                                         weights_only=True, map_location=self.device))
 
-        input_norm_data = torch.load(os.path.join(path,"input_normalizations.pt"), 
-                                     map_location=self.device, weights_only=True)
-        self.input_normalizations = input_norm_data[0] # <- in shape expected by networks
-        self.required_emu_params  = input_norm_data[1]
-        self.emu_param_bounds     = input_norm_data[2]
-
         ps_properties = np.load(os.path.join(path, "ps_properties.npz"))
         self.k_emu = ps_properties["k"]
         self.ells = ps_properties["ells"]
         self.z_eff = ps_properties["z_eff"]
         self.ndens = ps_properties["ndens"]
+
+        input_norm_data = torch.load(os.path.join(path,"input_normalizations.pt"), 
+                                     map_location=self.device, weights_only=True)
+        self.input_normalizations = input_norm_data[0] # <- in shape expected by networks
+        self.required_emu_params  = input_norm_data[1]
+        self.emu_param_bounds     = input_norm_data[2]
 
         output_norm_data = torch.load(os.path.join(path,"output_normalizations.pt"), 
                                       map_location=self.device, weights_only=True)
