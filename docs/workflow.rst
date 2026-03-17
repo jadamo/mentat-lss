@@ -45,14 +45,11 @@ The following is an example of such a file.
 
     num_cosmo_params    : 5
     num_nuisance_params : 3 # <- per tracer
-    num_tracers : 2
-    num_zbins   : 2
-    num_ells    : 2
-    num_kbins   : 25
 
     # specifications are for each network - will be repeated for each sample / redshift bin
     galaxy_ps_emulator:
         # mlp parameters
+        spectrum_embed_dim  : 8
         num_mlp_blocks      : 2
         num_block_layers    : 5
         use_skip_connection : True

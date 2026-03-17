@@ -67,7 +67,7 @@ def test_transformer_block(embedding_dim, split_dim, expected):
 def test_stacked_transformer_network():
 
     current_dir = os.path.dirname(os.path.realpath(__file__))
-    test_dir = current_dir+"/../configs/network_pars/network_pars_example.yaml"
+    test_dir = os.path.join(current_dir, "test_configs", "network_pars_stacked_transformer.yaml")
 
     # constructes the network
     test_emulator = emulator.ps_emulator(test_dir, "train")
@@ -133,9 +133,13 @@ def test_combined_tracer_transformer_organize_params():
                 idx1 = z*test_emulator.num_tracers + s1
                 idx2 = z*test_emulator.num_tracers + s2
                 iterate = test_emulator.num_tracers*test_emulator.num_zbins
-                assert torch.all(organized_input[out_idx,z,test_emulator.num_cosmo_params:test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params] == \
-                                                    torch.concatenate([test_input[b, test_emulator.num_cosmo_params + idx1::iterate],
-                                                                       test_input[b, test_emulator.num_cosmo_params + idx2::iterate]]))
+                if s1 == s2:
+                    # for auto-spectra, the second bias block should be zeroed out
+                    assert torch.all(organized_input[out_idx,z,test_emulator.num_cosmo_params + test_emulator.num_nuisance_params:test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params] == 0.)
+                else:
+                    assert torch.all(organized_input[out_idx,z,test_emulator.num_cosmo_params:test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params] == \
+                                                        torch.concatenate([test_input[b, test_emulator.num_cosmo_params + idx1::iterate],
+                                                                           test_input[b, test_emulator.num_cosmo_params + idx2::iterate]]))
                 iter+=1
 
 def test_combined_tracer_transformer_forward():

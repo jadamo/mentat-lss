@@ -29,10 +29,16 @@ def define_model(trial, node_id, default_config_file, device=None):
     num_block_layers = trial.suggest_int("num_block_layers", 2, 6)
     batch_size = trial.suggest_int("batch_size", 100, 1000)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2)
+    split_dim = trial.suggest_int("split_dim", 4, 10)
+    split_size = trial.suggest_int("split_size", 10, 40)
+    spectrum_embed_dim = trial.suggest_int("spectrum_embed_dim", 4, 16)
 
     trial_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = num_mlp_blocks
     trial_config_file["galaxy_ps_emulator"]["num_block_layers"] = num_block_layers
     trial_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = num_transformer_blocks
+    trial_config_file["galaxy_ps_emulator"]["split_dim"] = split_dim
+    trial_config_file["galaxy_ps_emulator"]["split_size"] = split_size
+    trial_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = spectrum_embed_dim
     trial_config_file["batch_size"] = batch_size
     trial_config_file["galaxy_ps_learning_rate"] = learning_rate
     # to save time, only train with 10% of the full data
@@ -51,6 +57,9 @@ def save_best_params(save_loc, default_config_file, best_params):
     best_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = best_params["num_mlp_blocks"]
     best_config_file["galaxy_ps_emulator"]["num_block_layers"] = best_params["num_block_layers"]
     best_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = best_params["num_transformer_blocks"]
+    best_config_file["galaxy_ps_emulator"]["split_dim"] = best_params["split_dim"]
+    best_config_file["galaxy_ps_emulator"]["split_size"] = best_params["split_size"]
+    best_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = best_params["spectrum_embed_dim"]
     best_config_file["batch_size"] = best_params["batch_size"]
     best_config_file["galaxy_ps_learning_rate"] = best_params["learning_rate"]
 
