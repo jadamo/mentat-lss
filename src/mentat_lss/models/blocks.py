@@ -57,7 +57,7 @@ class linear_with_channels(nn.Module):
 class block_resnet(nn.Module):
     
     def __init__(self, input_dim:int, output_dim:int, num_layers:int, skip_connection:bool=True):
-        """Initializes a resnet MLP block
+        """Initializes a Residual Network (ResNet) MLP block
 
         Args:
             input_dim (int): input dimension.
@@ -96,29 +96,6 @@ class block_resnet(nn.Module):
         """
         Y = self.layers(X)
         return Y + self.bn(self.skip_layer(X))
-
-class block_parallel_resnet(nn.Module):
-    
-    def __init__(self, input_dim, output_dim, num_layers, num_channels, skip_connection):
-        
-        super().__init__()
-
-        self.layers = nn.Sequential()
-        self.layers.add_module("layer0",  linear_with_channels(input_dim, output_dim, num_channels))
-        self.layers.add_module("ReLU",    nn.ReLU())
-        for i in range(num_layers-1):
-            self.layers.add_module("layer"+str(i+1), linear_with_channels(output_dim, output_dim, num_channels))
-            self.layers.add_module("bn"+str(i+1),    nn.BatchNorm1d(num_channels))
-            self.layers.add_module("ReLU",           nn.ReLU())
-    
-        if skip_connection:
-            self.skip_layer = linear_with_channels(input_dim, output_dim, num_channels)
-            self.bn = nn.BatchNorm1d(num_channels)
-
-    def forward(self, X):
-        Y = self.layers(X)
-        return Y + self.bn(self.skip_layer(X))
-
 
 class multi_headed_attention(nn.Module):
 

@@ -3,7 +3,7 @@
 Installation Instructions
 =========================
 
-This package works on both Linux and MacOS (intel and arm64) platforms, and has so-far been tested using **Python 3.9 - 3.11**. There are two methods to install the code.
+This package works on both Linux and MacOS (intel and arm64) platforms, and has so-far been tested using **Python 3.9 - 3.11**. There are two (plus one) methods to install the code.
 
 Preliminaries
 -------------

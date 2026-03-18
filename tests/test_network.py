@@ -87,3 +87,13 @@ def test_stacked_transformer_network():
                                          test_emulator.num_zbins,
                                          test_emulator.num_kbins*test_emulator.num_ells)
     assert torch.allclose(test_output_sub, test_output_full[:,0,0])
+
+def test_activation_functions():
+
+    # test that the activation functions do not produce NaNs or infs for typical inputs
+    test_input = torch.randn(100)
+
+    func = activation_function(100)
+    gelu_output = func(test_input)
+    assert not torch.all(torch.isnan(gelu_output))
+    assert not torch.all(torch.isinf(gelu_output))
