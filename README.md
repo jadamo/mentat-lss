@@ -50,7 +50,7 @@ Check out our [ReadTheDocs Page](https://spherex-emu.readthedocs.io/en/latest/wo
 
 If you use this package for your research, please cite the following papers:
 
-- Adamo et al (2025) - [https://arxiv.org/abs/2603.16003](https://arxiv.org/abs/2603.16003)
+- Adamo et al (2026) - [https://arxiv.org/abs/2603.16003](https://arxiv.org/abs/2603.16003)
 - symbolic_pofk ([Bartlett et al (2024)](https://ui.adsabs.harvard.edu/abs/2024A%26A...686A.209B/abstract))
 
 ## Authors
