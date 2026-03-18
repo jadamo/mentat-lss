@@ -12,13 +12,17 @@ This stage is where you decide what power spectrum model you want to emulate, an
 parameter ranges it will be valid in. Assuming you have access to ``ps_1loop``, we have provided a script in 
 ``scripts/make_training_set_ps_1loop.py`` that will attempt to create a training set in the right format for you.
 
-If you are creating your own training set, the following are the required ingredients and format you should use:
+If you are creating your own training set with a different model, the following are the required ingredients and format you should use:
 
 * Cosmology and survey parameters config files. We provide some example files in the ``configs`` directory.
 * Your data should be stored in `pk-training.npz`, `pk-validation.npz`, and `pk-testing.npz` files, each of which have:
     * a params array with shape ``[N, num_params]``.
     * a galaxy power spectrum array with shape ``[N, num_auto_plus_cross_spectra, num_redshift_bins, num_kbins, num_ells]``.
-* You should have a `kbins.npz` file with the corresponding k-bin centers in a numpy array.
+* You should have a 'ps_properties.npz' with the following properties:
+    * ells: the multipoles emulated (ex: [0, 2])
+    * ndens: the number densities of each tracer in each redshift bin (shape [num_tracers, num_redshift_bins])
+    * z_eff: the effective redshift of each redshift bin (shape [num_redshift_bins])
+    * k_emu: the k-centers used to generate the training set power spectra (shape [num_kbins])
 * You should have a `cov.npy` file with a valid covariance matrix (ex: from `CovaPT` or `TheCov`).
 
 Training the Emulator
@@ -31,14 +35,15 @@ The following is an example of such a file.
 .. code-block:: yaml
 
     # directory that all other paths are relative to
-    input_dir: /home/u12/jadamo/SPHEREx/mentat-lss/
+    # Ex: the repository directory
+    input_dir: <path_to_your_directory>
     # Where to save the network
-    save_dir: ./emulators/stacked_transformer_2t_2z_hypersphere/
+    save_dir: <path_to_save_directory>
     # Where your training set lives
-    training_dir: ../../xdisk/training_set_eft_2t_2z_hypersphere/
+    training_dir: <path_to_training_set_directory>
     # Location of config file with cosmology + bias parameters
     # This file contains all of the parameter ranges
-    cosmo_dir : ./configs/cosmo_pars/cosmo_pars_2t_2z.yaml
+    cosmo_dir : <path/to/cosmo_config.yaml>
 
     model_type : stacked_transformer
     loss_type : hyperbolic_chi2
@@ -53,12 +58,12 @@ The following is an example of such a file.
     # specifications are for each network - will be repeated for each sample / redshift bin
     galaxy_ps_emulator:
         # mlp parameters
-        num_mlp_blocks      : 2
-        num_block_layers    : 5
+        num_mlp_blocks      : 4
+        num_block_layers    : 2
         use_skip_connection : True
 
         # transformer parameters
-        num_transformer_blocks : 2
+        num_transformer_blocks : 1
         split_dim              : 5
         split_size             : 20
 
@@ -83,9 +88,11 @@ Here are some important considerations to make before training:
 
 - You'll need to decide whether to try training your network on a CPU or GPU (assuming one is available to you). In general, networks with transformers train **significantly** faster on  GPUs, so we recommend you try training on GPUs whenever possible. By defualt, mentat-lss will attempt to use a GPU if it is available.
 - The specific binning information (num_zbins, num_ells, etc) must match those found in the training set. The code will throw an error on startup if they don't.
-- The above specifications are the optimized values found in PAPER_LINK_HERE. The optimal setup will potentially be different for your case, but these values should provide a good starting point.
+- The above specifications are the optimized values found in `Adamo et al (2026)`_. The optimal setup will potentially be different for your case, but these values should provide a good starting point.
 
-Once you have your configs all sorted. You can train you network using the following script,
+.. _`Adamo et al (2026)`: https://arxiv.org/abs/2603.16003
+
+Once you have your configs all sorted, you can train you network using the following script,
 
 .. code-block:: python
 
@@ -106,7 +113,7 @@ Once you have your configs all sorted. You can train you network using the follo
     training_loops.train_on_single_device(emulator)
 
 We have also provided a more robust script in `scripts/train_emulator.py` that also
-handles training on multiple GPUs. Fore more details, see :doc:`tutorials/training`.
+handles training on multiple GPUs. For more details, see :doc:`tutorials/training`.
 
 During the actual training process, `mentat-lss` will loop through each subnet, each of which
 correspond to a single tracer / redshift bin. It will then print out the average training set and 
