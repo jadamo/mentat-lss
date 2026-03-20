@@ -81,10 +81,15 @@ class ps_emulator():
         """
 
         ps_properties = np.load(os.path.join(path, "ps_properties.npz"))
-        self.config_dict["num_kbins"] = len(ps_properties["k"])
-        self.config_dict["num_ells"] = len(ps_properties["ells"])
-        self.config_dict["num_zbins"] = len(ps_properties["z_eff"])
-        self.config_dict["num_tracers"] = len(ps_properties["ndens"])
+        self.k_emu = ps_properties["k"]
+        self.ells  = ps_properties["ells"]
+        self.z_eff = ps_properties["z_eff"]
+        self.ndens = ps_properties["ndens"]
+
+        self.config_dict["num_kbins"]   = len(self.k_emu)
+        self.config_dict["num_ells"]    = len(self.ells)
+        self.config_dict["num_zbins"]   = len(self.z_eff)
+        self.config_dict["num_tracers"] = len(self.ndens)
 
         self.logger.info(f"Emulator using {self.config_dict['num_kbins']} k-bins, {self.config_dict['num_ells']} ells, {self.config_dict['num_zbins']} z-bins, and {self.config_dict['num_tracers']} tracers (based on loaded ps_properties.npz file)")
 
@@ -101,11 +106,12 @@ class ps_emulator():
         self.galaxy_ps_model.load_state_dict(torch.load(os.path.join(path,'network_galaxy.params'), 
                                                         weights_only=True, map_location=self.device))
 
-        ps_properties = np.load(os.path.join(path, "ps_properties.npz"))
-        self.k_emu = ps_properties["k"]
-        self.ells = ps_properties["ells"]
-        self.z_eff = ps_properties["z_eff"]
-        self.ndens = ps_properties["ndens"]
+        if not hasattr(self, "k_emu") or not hasattr(self, "ells") or not hasattr(self, "z_eff") or not hasattr(self, "ndens"):
+            ps_properties = np.load(os.path.join(path, "ps_properties.npz"))
+            self.k_emu = ps_properties["k"]
+            self.ells = ps_properties["ells"]
+            self.z_eff = ps_properties["z_eff"]
+            self.ndens = ps_properties["ndens"]
 
         input_norm_data = torch.load(os.path.join(path,"input_normalizations.pt"), 
                                      map_location=self.device, weights_only=True)
@@ -149,7 +155,7 @@ class ps_emulator():
         else :             dir = self.input_dir+self.training_dir
 
         if not hasattr(self, "k_emu"):
-            self.logger.info("loading kbins from training set")
+            self.logger.info("loading ps properties from training set")
             ps_properties = np.load(os.path.join(dir, "ps_properties.npz"))
             self.k_emu = ps_properties["k"]
             self.ells = ps_properties["ells"]
@@ -437,7 +443,7 @@ class ps_emulator():
         """initializes training data as nested lists with dims [nps, nz]"""
 
         if self.model_type == "combined_tracer_transformer":
-            num_nets = self.num_zbins
+            num_nets = 2 * self.num_zbins
         else:
             num_nets = self.num_spectra * self.num_zbins
 
@@ -450,7 +456,7 @@ class ps_emulator():
         """Sets optimization objects, one for each sub-network"""
 
         if self.model_type == "combined_tracer_transformer":
-            num_nets = self.num_zbins
+            num_nets = 2 * self.num_zbins
         else:
             num_nets = self.num_spectra * self.num_zbins
 
@@ -458,8 +464,16 @@ class ps_emulator():
         self.scheduler = [None for i in range(num_nets)]
         for net_idx in range(num_nets):
             if self.optimizer_type == "Adam":
-                self.optimizer[net_idx] = torch.optim.Adam(self.galaxy_ps_model.networks[net_idx].parameters(), 
-                                                        lr=self.galaxy_ps_learning_rate)
+                if self.model_type == "combined_tracer_transformer":
+                    if net_idx < self.num_zbins:
+                        net = self.galaxy_ps_model.auto_networks[net_idx]
+                    else:
+                        net = self.galaxy_ps_model.cross_networks[net_idx - self.num_zbins]
+                    self.optimizer[net_idx] = torch.optim.Adam(net.parameters(),
+                                                               lr=self.galaxy_ps_learning_rate)
+                else:
+                    self.optimizer[net_idx] = torch.optim.Adam(self.galaxy_ps_model.networks[net_idx].parameters(),
+                                                               lr=self.galaxy_ps_learning_rate)
             else:
                 raise KeyError("Error! Invalid optimizer type specified!")
 
@@ -472,8 +486,15 @@ class ps_emulator():
         """saves current best network to an independent state_dict"""
         if mode == "galaxy_ps":
             new_checkpoint = self.galaxy_ps_model.state_dict()
+            if self.model_type == "combined_tracer_transformer":
+                if net_idx < self.num_zbins:
+                    key_prefix = f"auto_networks.{int(net_idx)}."
+                else:
+                    key_prefix = f"cross_networks.{int(net_idx - self.num_zbins)}."
+            else:
+                key_prefix = f"networks.{int(net_idx)}."
             for name in new_checkpoint.keys():
-                if f"networks.{int(net_idx)}." in name:
+                if key_prefix in name:
                     self.galaxy_ps_checkpoint[name] = new_checkpoint[name]
         else:
             raise NotImplementedError

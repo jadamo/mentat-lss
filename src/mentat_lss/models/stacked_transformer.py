@@ -39,7 +39,9 @@ class single_transformer(nn.Module):
             self.mlp_blocks.add_module("ResNet"+str(i+1),
                     blocks.block_resnet(self.output_dim,
                                         self.output_dim,
+                                        config_dict["galaxy_ps_emulator"].get("hidden_dim_factor", 1.0),
                                         config_dict["galaxy_ps_emulator"]["num_block_layers"],
+                                        "batch",
                                         config_dict["galaxy_ps_emulator"]["use_skip_connection"]))
         
         # expand mlp section output
