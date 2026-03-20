@@ -470,9 +470,9 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
 
     # if net_idx not specified, recursively call the function with all possible values
     if bin_idx == None and emulator.model_type == "combined_tracer_transformer":
-        total_loss = torch.zeros(emulator.num_zbins, requires_grad=False)
-        for z in range(emulator.num_zbins):
-            total_loss[z] = calc_avg_loss(emulator, data_loader, loss_function, z)
+        total_loss = torch.zeros(2 * emulator.num_zbins, requires_grad=False)
+        for net_idx in range(2 * emulator.num_zbins):
+            total_loss[net_idx] = calc_avg_loss(emulator, data_loader, loss_function, net_idx)
         return total_loss
     elif bin_idx == None:
         total_loss = torch.zeros(emulator.num_spectra, emulator.num_zbins, requires_grad=False)
@@ -484,7 +484,9 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
     avg_loss = 0.
 
     if emulator.model_type == "combined_tracer_transformer":
-        net_idx = bin_idx
+        net_idx  = bin_idx
+        is_cross = net_idx >= emulator.num_zbins
+        z_idx    = net_idx - emulator.num_zbins if is_cross else net_idx
     else:
         net_idx = (bin_idx[1] * emulator.num_spectra) + bin_idx[0]
     with torch.no_grad():
@@ -493,7 +495,9 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
             params = emulator.galaxy_ps_model.organize_parameters(params)
             prediction = emulator.galaxy_ps_model.forward(params, net_idx)
             if emulator.model_type == "combined_tracer_transformer":
-                target = torch.flatten(batch[1][:,:,net_idx], start_dim=0, end_dim=1)
+                spec_indices = emulator.galaxy_ps_model.cross_spectrum_indices if is_cross \
+                               else emulator.galaxy_ps_model.auto_spectrum_indices
+                target = torch.flatten(batch[1][:, spec_indices, z_idx], start_dim=0, end_dim=1)
             else:
                 target = torch.flatten(batch[1][:,:,net_idx[0], net_idx[1]], start_dim=1)
 

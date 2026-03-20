@@ -56,13 +56,15 @@ class linear_with_channels(nn.Module):
 
 class block_resnet(nn.Module):
     
-    def __init__(self, input_dim:int, output_dim:int, num_layers:int, skip_connection:bool=True):
+    def __init__(self, input_dim:int, output_dim:int, hidden_dim_factor:float, num_layers:int, norm_type:str="batch", skip_connection:bool=True):
         """Initializes a Residual Network (ResNet) MLP block
 
         Args:
             input_dim (int): input dimension.
             output_dim (int): output dimension. All layers except for the first one will have this dimension
+            hidden_dim_factor (float): factor by which to multiply the output dimension for the hidden layers. Recommended to use >= 1
             num_layers (int): numer of layers to include in the block. Except for the first layer, will all have shape (output_dim, output_dim)
+            norm_type (str, optional): type of normalization to use. One of ["batch", "layer"]. Defaults to "batch".
             skip_connection (bool, optional): whether to include a redidual connection, where the input is add
                 to the output. Defaults to True.
         Raises:
@@ -72,18 +74,28 @@ class block_resnet(nn.Module):
 
         if input_dim <= 0 or output_dim <= 0 or num_layers <= 0:
             raise ValueError("Block structure parameters must be > 0")
+        hidden_dim = int(output_dim * hidden_dim_factor)
 
         self.layers = nn.Sequential()
-        self.layers.add_module("layer0",    nn.Linear(input_dim, output_dim))
-        self.layers.add_module("Activation", activation_function(output_dim))
-        for i in range(num_layers-1):
-            self.layers.add_module("layer"+str(i+1),      nn.Linear(output_dim, output_dim))
-            self.layers.add_module("bn"+str(i+1),         nn.LayerNorm(output_dim))
-            self.layers.add_module("Activation"+str(i+1), activation_function(output_dim))
+        self.layers.add_module("layer0",    nn.Linear(input_dim, hidden_dim))
+        self.layers.add_module("Activation", activation_function(hidden_dim))
+        for i in range(num_layers-2):
+            self.layers.add_module("layer"+str(i+1),      nn.Linear(hidden_dim, hidden_dim))
+            if norm_type == "batch":
+                self.layers.add_module("bn"+str(i+1),     nn.BatchNorm1d(hidden_dim))
+            elif norm_type == "layer":
+                self.layers.add_module("bn"+str(i+1),     nn.LayerNorm(hidden_dim))
+            self.layers.add_module("Activation"+str(i+1), activation_function(hidden_dim))
     
+        # output layer
+        self.layers.add_module("layer"+str(num_layers-1), nn.Linear(hidden_dim, output_dim))
+
         if skip_connection:
             self.skip_layer = nn.Linear(input_dim, output_dim)
-            self.bn = nn.LayerNorm(output_dim)
+            if norm_type == "batch":
+                self.bn = nn.BatchNorm1d(output_dim)
+            elif norm_type == "layer":
+                self.bn = nn.LayerNorm(output_dim)
 
     def forward(self, X:torch.Tensor):
         """Passes through the block

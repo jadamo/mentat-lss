@@ -2,7 +2,7 @@
 input_dir: ""
 # file paths are relative w.r.t. the repository directory
 # Where to save the network
-save_dir: ./emulators/combined_tracer_transformer_2t_2z_hypersphere/
+save_dir: ./tests/test_networks/combined_tracer_transformer/
 # Where your training set lives
 training_dir: ./tests/test_configs/
 # Location of config file with cosmology + bias parameters
@@ -22,24 +22,13 @@ galaxy_ps_emulator:
   spectrum_embed_dim  : 8 
   num_mlp_blocks      : 2
   num_block_layers    : 5
+  hidden_dim_factor   : 1.0
   use_skip_connection : True
 
   # transformer parameters
   num_transformer_blocks : 2
   split_dim              : 5
   split_size             : 20
-
-ps_nw_emulator:
-  num_kbins : 256
-  # mlp parameters
-  num_mlp_blocks      : 1
-  num_block_layers    : 4
-  use_skip_connection : True
-
-  # transformer parameters
-  num_transformer_blocks : 1
-  split_dim              : 4
-  split_size             : 64
 
 # Training parameters
 num_epochs: 500

@@ -1,7 +1,7 @@
 import itertools
 
 import torch
-import os
+import os, math
 import pytest
 import itertools
 
@@ -22,21 +22,22 @@ def test_linear_with_channels():
         
         assert torch.all(test_output[:,1] != torch.sum(test_input[:,1]))
 
-@pytest.mark.parametrize("input_dim, output_dim, num_layers, expected", [
-    (10, 10, 2, None), 
-    (1, 10, 3, None),
-    (0, 10, 3, ValueError),
-    (10, 0, 3, ValueError),
-    (10, 10, 0, ValueError),
+@pytest.mark.parametrize("input_dim, output_dim, num_layers, hidden_dim_factor, expected", [
+    (10, 10, 2, 1., None), 
+    (1, 10, 3, 1.5, None),
+    (1, 10, 3, 0.9, None),
+    (0, 10, 3, 1.0, ValueError),
+    (10, 0, 3, 1.0, ValueError),
+    (10, 10, 0, 1.0, ValueError),
 ])
-def test_block_resnet(input_dim, output_dim, num_layers, expected):
+def test_block_resnet(input_dim, output_dim, num_layers, hidden_dim_factor, expected):
 
     if isinstance(expected, type) and issubclass(expected, Exception):
         with pytest.raises(expected):
-            resnet_block = block_resnet(input_dim, output_dim, num_layers, True)
+            resnet_block = block_resnet(input_dim, output_dim, hidden_dim_factor, num_layers, skip_connection=True)
     else:
         test_input = torch.rand((100, input_dim))
-        resnet_block = block_resnet(input_dim, output_dim, num_layers, True)
+        resnet_block = block_resnet(input_dim, output_dim, hidden_dim_factor, num_layers, skip_connection=True)
         test_output = resnet_block(test_input)
 
         assert test_output.shape == (100, output_dim)
@@ -117,30 +118,35 @@ def test_combined_tracer_transformer_organize_params():
                                  device = test_emulator.device)
 
     organized_input = test_emulator.galaxy_ps_model.organize_parameters(test_input)
-    assert organized_input.shape == (10 *test_emulator.num_spectra, test_emulator.num_zbins,
-                                     test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params)
+    assert organized_input[0].shape == (10 *test_emulator.num_tracers, test_emulator.num_zbins,
+                                       test_emulator.num_cosmo_params + test_emulator.num_nuisance_params)
+    assert organized_input[1].shape == (10 *math.comb(test_emulator.num_tracers, 2), test_emulator.num_zbins,
+                                       test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params)
 
     for b in range(test_input.shape[0]):
         for z in range(test_emulator.num_zbins):
-            iter = 0
+            # stride matching the reshape layout: [nn, nz, nt] → stride per nuisance param = nz*nt
+            iterate = test_emulator.num_zbins * test_emulator.num_tracers
+            auto_iter = 0
+            cross_iter = 0
             for s1, s2 in itertools.product(range(test_emulator.num_tracers), repeat=2):
                 if s1 > s2: continue
-                out_idx = b * test_emulator.num_spectra + iter
-                # check that cosmology parameters are the same for every bin
-                assert torch.all(organized_input[out_idx,z,:test_emulator.num_cosmo_params] == test_input[b, :test_emulator.num_cosmo_params])
-                
-                # check that bias parameters are correctly ordered
-                idx1 = z*test_emulator.num_tracers + s1
-                idx2 = z*test_emulator.num_tracers + s2
-                iterate = test_emulator.num_tracers*test_emulator.num_zbins
                 if s1 == s2:
-                    # for auto-spectra, the second bias block should be zeroed out
-                    assert torch.all(organized_input[out_idx,z,test_emulator.num_cosmo_params + test_emulator.num_nuisance_params:test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params] == 0.)
+                    idx1 = z*test_emulator.num_tracers + s1
+                    out_idx = b * test_emulator.num_tracers + auto_iter
+                    assert torch.all(organized_input[0][out_idx,z,:test_emulator.num_cosmo_params] == test_input[b, :test_emulator.num_cosmo_params])
+                    assert torch.all(organized_input[0][out_idx,z,test_emulator.num_cosmo_params:test_emulator.num_cosmo_params + test_emulator.num_nuisance_params] == \
+                                                        test_input[b, test_emulator.num_cosmo_params + idx1::iterate])
+                    auto_iter += 1
                 else:
-                    assert torch.all(organized_input[out_idx,z,test_emulator.num_cosmo_params:test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params] == \
+                    idx1 = z*test_emulator.num_tracers + s1
+                    idx2 = z*test_emulator.num_tracers + s2
+                    out_idx = b * math.comb(test_emulator.num_tracers, 2) + cross_iter
+                    assert torch.all(organized_input[1][out_idx,z,:test_emulator.num_cosmo_params] == test_input[b, :test_emulator.num_cosmo_params])
+                    assert torch.all(organized_input[1][out_idx,z,test_emulator.num_cosmo_params:test_emulator.num_cosmo_params + 2*test_emulator.num_nuisance_params] == \
                                                         torch.concatenate([test_input[b, test_emulator.num_cosmo_params + idx1::iterate],
                                                                            test_input[b, test_emulator.num_cosmo_params + idx2::iterate]]))
-                iter+=1
+                    cross_iter += 1
 
 def test_combined_tracer_transformer_forward():
 
@@ -165,13 +171,42 @@ def test_combined_tracer_transformer_forward():
     test_output_full = test_emulator.galaxy_ps_model.forward(test_input)
     test_output_full_2 = test_emulator.galaxy_ps_model.forward(test_input_2)
 
-    assert test_output_sub.shape == (2*test_emulator.num_spectra, test_emulator.num_kbins * test_emulator.num_ells)
-    assert test_output_full.shape == (2*test_emulator.num_spectra,
-                                      test_emulator.num_zbins,
-                                      test_emulator.num_kbins*test_emulator.num_ells)
+    # net_idx=0 is auto network for z=0: output shape [batch*num_auto, output_dim]
+    assert test_output_sub.shape == (2*test_emulator.num_tracers, test_emulator.num_kbins * test_emulator.num_ells)
+    # full forward: [batch, num_spectra, num_zbins, output_dim]
+    assert test_output_full.shape == (2, test_emulator.num_spectra,
+                                         test_emulator.num_zbins,
+                                         test_emulator.num_kbins*test_emulator.num_ells)
 
     assert torch.all(torch.isnan(test_output_full)) == False
     assert torch.all(torch.isinf(test_output_full)) == False
 
     # outputs for different inputs should not be the same
     assert torch.allclose(test_output_full, test_output_full_2) == False
+
+@pytest.mark.parametrize("model_type,", [
+    ("stacked_transformer"),
+    ("combined_tracer_transformer")
+])
+def test_save_and_load(model_type):
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+    test_config_file = os.path.join(current_dir, "test_configs", f"network_pars_{model_type}.yaml")
+    test_dir = os.path.join(current_dir, "test_networks", f"{model_type}")
+    save_dir = os.path.join(current_dir, "test_networks", f"{model_type}")
+
+    # constructes the network
+    test_emulator = emulator.ps_emulator(test_config_file, "train", device="cpu")
+    test_emulator._init_training_stats()
+    test_emulator._load_ps_properties(os.path.join(current_dir, "test_configs"))
+    initial_dict = test_emulator.galaxy_ps_model.state_dict()
+
+    test_emulator._save_model()
+    loaded_emulator = emulator.ps_emulator(test_dir, "eval", device="cpu")
+    loaded_dict = loaded_emulator.galaxy_ps_model.state_dict()
+    # check that the state_dicts are the same
+
+    for key in initial_dict.keys():
+        assert torch.all(initial_dict[key] == loaded_dict[key])
+
+    if os.path.exists(save_dir):
+        os.system(f"rm -r {save_dir}")

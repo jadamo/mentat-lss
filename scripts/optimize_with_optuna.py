@@ -10,41 +10,43 @@ import mentat_lss.training_loops as training_loops
 from mentat_lss.utils import load_config_file
 from mentat_lss.emulator import ps_emulator
 
-def create_cache(node_id=0):
-    cache_dir = f"cache_node{node_id}"
+def create_cache(cache_dir):
     if not os.path.exists(cache_dir):
-        os.mkdir(cache_dir)
+        os.makedirs(cache_dir)
 
-def clean_cache(node_id=0):
-    cache_dir = f"cache_node{node_id}"
+def clean_cache(cache_dir):
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir)
 
-def define_model(trial, node_id, default_config_file, device=None):
+def define_model(trial, cache_dir, default_config_file, device=None):
 
     trial_config_file = default_config_file.copy()
 
     num_mlp_blocks = trial.suggest_int("num_mlp_blocks", 1, 6)
     num_transformer_blocks = trial.suggest_int("num_transformer_blocks", 0, 1)
     num_block_layers = trial.suggest_int("num_block_layers", 2, 6)
+    hidden_dim_factor = trial.suggest_float("hidden_dim_factor", 1.0, 2.0)
     batch_size = trial.suggest_int("batch_size", 100, 1000)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2)
     split_dim = trial.suggest_int("split_dim", 4, 10)
     split_size = trial.suggest_int("split_size", 10, 40)
-    spectrum_embed_dim = trial.suggest_int("spectrum_embed_dim", 4, 16)
+    spectrum_embed_dim = trial.suggest_int("spectrum_embed_dim", 2, 10)
 
     trial_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = num_mlp_blocks
     trial_config_file["galaxy_ps_emulator"]["num_block_layers"] = num_block_layers
+    trial_config_file["galaxy_ps_emulator"]["hidden_dim_factor"] = hidden_dim_factor
     trial_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = num_transformer_blocks
     trial_config_file["galaxy_ps_emulator"]["split_dim"] = split_dim
     trial_config_file["galaxy_ps_emulator"]["split_size"] = split_size
     trial_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = spectrum_embed_dim
     trial_config_file["batch_size"] = batch_size
     trial_config_file["galaxy_ps_learning_rate"] = learning_rate
-    # to save time, only train with 10% of the full data
-    trial_config_file["training_set_fraction"] = 0.1
+    # to save time, only train with 15% of the full data
+    trial_config_file["training_set_fraction"] = 0.15
 
-    cache_dir = f"cache_node{node_id}"
+    # Use an absolute path for save_dir so os.path.join(input_dir, save_dir) resolves
+    # to this location regardless of what input_dir is set to.
+    trial_config_file["save_dir"] = os.path.join(cache_dir, f"trial_{trial.number}")
     file_path = os.path.join(cache_dir, f'config_{trial.number}.yaml')
     with open(file_path, 'w') as outfile:
         yaml.dump(dict(trial_config_file), outfile, sort_keys=False, default_flow_style=False)
@@ -56,6 +58,7 @@ def save_best_params(save_loc, default_config_file, best_params):
 
     best_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = best_params["num_mlp_blocks"]
     best_config_file["galaxy_ps_emulator"]["num_block_layers"] = best_params["num_block_layers"]
+    best_config_file["galaxy_ps_emulator"]["hidden_dim_factor"] = best_params["hidden_dim_factor"]
     best_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = best_params["num_transformer_blocks"]
     best_config_file["galaxy_ps_emulator"]["split_dim"] = best_params["split_dim"]
     best_config_file["galaxy_ps_emulator"]["split_size"] = best_params["split_size"]
@@ -70,8 +73,8 @@ def save_best_params(save_loc, default_config_file, best_params):
     with open(file_path, 'w') as outfile:
         yaml.dump(dict(best_config_file), outfile, sort_keys=False, default_flow_style=False)
 
-def objective(trial, node_id, default_config_file, device=None):
-    emulator = define_model(trial, node_id, default_config_file, device)
+def objective(trial, cache_dir, default_config_file, device=None):
+    emulator = define_model(trial, cache_dir, default_config_file, device)
 
     training_loops.train_on_single_device(emulator)
 
@@ -86,8 +89,8 @@ def objective(trial, node_id, default_config_file, device=None):
 
     return result
 
-def run_worker(node_id, gpu_id, default_config_file, n_trials, max_time, db_path):
-    
+def run_worker(gpu_id, cache_dir, default_config_file, n_trials, db_path):
+
     device = torch.device(f"cuda:{gpu_id}")
     storage = optuna.storages.RDBStorage(
         url=f"sqlite:///{db_path}",
@@ -98,9 +101,8 @@ def run_worker(node_id, gpu_id, default_config_file, n_trials, max_time, db_path
         storage=storage
     )
     study.optimize(
-        lambda trial: objective(trial, node_id, default_config_file, device),
+        lambda trial: objective(trial, cache_dir, default_config_file, device),
         n_trials=n_trials,
-        timeout=max_time
     )
 
 def main():
@@ -117,6 +119,10 @@ def main():
     parser.add_argument(
         "--db-path", type=str, default="optuna_results.db",
         help="Path to Optuna SQLite DB. Must be on a shared filesystem for multi-node."
+    )
+    parser.add_argument(
+        "--cache-dir", type=str, default="./optuna_cache",
+        help="Base directory for per-node trial caches. Each node writes to <cache-dir>/node<N>/."
     )
     command_line_args = parser.parse_args()
 
@@ -139,11 +145,11 @@ def main():
         load_if_exists=True
     )
 
-    logger.info(f"Node {node_id} creating cache directory...")
-    create_cache(node_id)
+    cache_dir = os.path.abspath(os.path.join(command_line_args.cache_dir, f"node{node_id}"))
+    logger.info(f"Node {node_id} creating cache directory {cache_dir}...")
+    create_cache(cache_dir)
 
     default_config_file = load_config_file(command_line_args.config_file)
-    max_time = int(2.9 * 24 * 60 * 60) # <- max of 3 days
 
     if num_gpus < 2:
         # Single GPU / CPU fallback
@@ -151,18 +157,16 @@ def main():
         logger.info(f"Running trials on device {device}")
         study = optuna.load_study(study_name="combined_tracer", storage=f"sqlite:///{db_path}")
         study.optimize(
-            lambda trial: objective(trial, node_id, default_config_file, device),
+            lambda trial: objective(trial, cache_dir, default_config_file, device),
             n_trials=command_line_args.n_trials,
-            timeout=max_time
         )
     else:
         import torch.multiprocessing as mp
         logger.info(f"Running trials on {num_gpus} GPUs with multiprocessing...")
-        gpu_id = range(num_gpus)
         mp.set_start_method("spawn", force=True)
         mp.spawn(
             run_worker,
-            args=(node_id, gpu_id, default_config_file, command_line_args.n_trials // num_gpus, max_time, db_path),
+            args=(cache_dir, default_config_file, command_line_args.n_trials // num_gpus, db_path),
             nprocs=num_gpus,
             join=True
         )
@@ -179,7 +183,7 @@ def main():
 
         save_best_params(command_line_args.config_file, default_config_file, trial.params)
     
-    clean_cache(node_id)
+    clean_cache(cache_dir)
 
 if __name__ == "__main__":
     main()
