@@ -210,22 +210,28 @@ def test_save_and_load(model_type):
     if os.path.exists(save_dir):
         os.system(f"rm -r {save_dir}")
 
-def test_get_power_spectra():
+@pytest.mark.parametrize("model_type,", [
+    ("stacked_transformer"),
+    ("combined_tracer_transformer")
+])
+def test_get_power_spectra(model_type):
 
     current_dir = os.path.dirname(os.path.realpath(__file__))
-    test_dir = os.path.join(current_dir, "test_configs", "network_pars_stacked_transformer.yaml")
+    test_dir = os.path.join(current_dir, "test_configs", f"network_pars_{model_type}.yaml")
 
     # constructes the network
     test_emulator = emulator.ps_emulator(test_dir, "train")
+    test_emulator._load_ps_properties(os.path.join(current_dir, "test_configs"))
+    test_emulator._init_analytic_model()
 
     # generate a random input sequence and pass it through the network
-    test_input = torch.randn(1, test_emulator.num_cosmo_params + \
-                                (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
-                                device = test_emulator.device)
+    test_input = torch.randn(test_emulator.num_cosmo_params + \
+                            (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
+                             device = test_emulator.device)
     test_emulator.galaxy_ps_model.eval()
     test_output = test_emulator.get_power_spectra(test_input)
 
-    assert test_output.shape == (1, test_emulator.num_spectra,
+    assert test_output.shape == (test_emulator.num_spectra,
                                  test_emulator.num_zbins,
                                  test_emulator.num_kbins,
                                  test_emulator.num_ells)
