@@ -50,14 +50,10 @@ def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.dat
         loss = emulator.loss_function(prediction, target, emulator.invcov_full, True)
         assert torch.isnan(loss) == False
         assert torch.isinf(loss) == False
-        if emulator.model_type == "combined_tracer_transformer":
-            emulator.optimizer[net_idx].zero_grad(set_to_none=True)
-            loss.backward()
-            emulator.optimizer[net_idx].step()
-        else:
-            emulator.optimizer[ps_idx][z_idx].zero_grad(set_to_none=True)
-            loss.backward()
-            emulator.optimizer[ps_idx][z_idx].step()
+
+        emulator.optimizer[net_idx].zero_grad(set_to_none=True)
+        loss.backward()
+        emulator.optimizer[net_idx].step()
 
         total_loss += loss.detach()
         total_time += (time.time() - t1)

@@ -176,7 +176,7 @@ def test_emulator_mode(model_mode, expected):
         if model_mode == "eval":
             train_emulator = emulator.ps_emulator(test_dir, "train")
             train_emulator._init_training_stats()
-            train_emulator._load_ps_properties(os.path.join(current_dir, "test_configs"))
+            train_emulator._load_ps_properties(os.path.join(current_dir, "test_data"))
             train_emulator._save_model()
             test_dir = os.path.join(current_dir, "test_networks", "stacked_transformer")
 
@@ -196,7 +196,7 @@ def test_save_and_load(model_type):
     # constructes the network
     test_emulator = emulator.ps_emulator(test_config_file, "train", device="cpu")
     test_emulator._init_training_stats()
-    test_emulator._load_ps_properties(os.path.join(current_dir, "test_configs"))
+    test_emulator._load_ps_properties(os.path.join(current_dir, "test_data"))
     initial_dict = test_emulator.galaxy_ps_model.state_dict()
 
     test_emulator._save_model()
@@ -221,7 +221,7 @@ def test_get_power_spectra(model_type):
 
     # constructes the network
     test_emulator = emulator.ps_emulator(test_dir, "train")
-    test_emulator._load_ps_properties(os.path.join(current_dir, "test_configs"))
+    test_emulator._load_ps_properties(os.path.join(current_dir, "test_data"))
     test_emulator._init_analytic_model()
 
     # generate a random input sequence and pass it through the network

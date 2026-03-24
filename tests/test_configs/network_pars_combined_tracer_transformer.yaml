@@ -4,7 +4,7 @@ input_dir: ""
 # Where to save the network
 save_dir: ./tests/test_networks/combined_tracer_transformer/
 # Where your training set lives
-training_dir: ./tests/test_configs/
+training_dir: ./tests/test_data/
 # Location of config file with cosmology + bias parameters
 # This file contains all of the parameter ranges
 cosmo_dir : ./tests/test_configs/cosmo_pars_2t_2z.yaml
@@ -31,10 +31,9 @@ galaxy_ps_emulator:
   split_size             : 20
 
 # Training parameters
-num_epochs: 500
+num_epochs: 10
 galaxy_ps_learning_rate: 0.005
-nw_ps_learning_rate : 0.0005
-batch_size: 1000
+batch_size: 50
 training_set_fraction : 1.0
 early_stopping_epochs: 25
 weight_initialization: He
