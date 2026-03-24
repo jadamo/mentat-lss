@@ -648,9 +648,11 @@ def compile_multiple_device_training_results(save_dir:str, config_dir:str, num_g
         for idx in split_indices[n]:
             if full_emulator.model_type == "combined_tracer_transformer":
                 net_idx = idx
+                full_emulator.galaxy_ps_model.auto_networks[net_idx] = seperate_network.galaxy_ps_model.auto_networks[net_idx]
+                full_emulator.galaxy_ps_model.cross_networks[net_idx] = seperate_network.galaxy_ps_model.cross_networks[net_idx]
             else:
                 net_idx = (idx[1] * full_emulator.num_spectra) + idx[0]
-            full_emulator.galaxy_ps_model.networks[net_idx] = seperate_network.galaxy_ps_model.networks[net_idx]
+                full_emulator.galaxy_ps_model.networks[net_idx] = seperate_network.galaxy_ps_model.networks[net_idx]
 
             train_data = torch.load(os.path.join(save_dir,sub_dir,"training_statistics/train_data_"+str(int(net_idx))+".dat"), weights_only=True)
             epochs = train_data.shape[1]
