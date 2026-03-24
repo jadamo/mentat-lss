@@ -445,7 +445,7 @@ class ps_emulator():
 
         self.train_loss = [[] for i in range(num_nets)]
         self.valid_loss = [[] for i in range(num_nets)]
-        self.train_time = 0.
+        self.train_time = 0. # <- One value for the full emulator, not one for each sub-network
 
 
     def _init_optimizer(self):
@@ -519,10 +519,10 @@ class ps_emulator():
         else:
             num_nets = self.num_zbins * self.num_spectra
         for net_idx in range(num_nets):
-            training_data = torch.vstack([torch.Tensor(self.train_loss[net_idx]), 
-                                          torch.Tensor(self.valid_loss[net_idx]),
-                                          torch.Tensor([self.train_time]*len(self.valid_loss[net_idx]))])
-            torch.save(training_data, os.path.join(training_data_dir, "train_data_"+str(net_idx)+".dat"))
+            torch.save({"train loss" : torch.Tensor(self.train_loss[net_idx]), 
+                        "valid loss" : torch.Tensor(self.valid_loss[net_idx]),
+                        "train time" : torch.Tensor([self.train_time])},
+                        os.path.join(training_data_dir, "train_data_"+str(net_idx)+".dat"))
         
         # configuration data
         with open(os.path.join(save_dir, 'config.yaml'), 'w') as outfile:
@@ -652,11 +652,9 @@ def compile_multiple_device_training_results(save_dir:str, config_dir:str, num_g
                 full_emulator.galaxy_ps_model.networks[net_idx] = seperate_network.galaxy_ps_model.networks[net_idx]
 
             train_data = torch.load(os.path.join(save_dir,sub_dir,"training_statistics/train_data_"+str(int(net_idx))+".dat"), weights_only=True)
-            epochs = train_data.shape[1]
-
-            full_emulator.train_loss[net_idx, :epochs] = train_data[0,:]
-            full_emulator.valid_loss[net_idx, :epochs] = train_data[1,:]
-            full_emulator.train_time = train_data[2,0]
+            full_emulator.train_loss = train_data["train loss"]
+            full_emulator.valid_loss = train_data["valid loss"]
+            full_emulator.train_time = train_data["train time"]
 
     full_emulator.galaxy_ps_checkpoint = copy.deepcopy(full_emulator.galaxy_ps_model.state_dict())
     

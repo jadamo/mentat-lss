@@ -243,7 +243,7 @@ def is_in_hypersphere(priors, params):
 
 def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, test_frac:float, 
                           param_dim, num_zbins, num_spectra, num_ells, k_dim, remove_old_files=True):
-    """Takes a set of matrices and reorganizes them into training, validation, and tests sets
+    """Takes a set of training data and reorganizes them into training, validation, and tests sets
     
     Args:
         training_dir: Directory contaitning matrices to organize
@@ -499,7 +499,7 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
                                else emulator.galaxy_ps_model.auto_spectrum_indices
                 target = torch.flatten(batch[1][:, spec_indices, z_idx], start_dim=0, end_dim=1)
             else:
-                target = torch.flatten(batch[1][:,:,net_idx[0], net_idx[1]], start_dim=1)
+                target = torch.flatten(batch[1][:,bin_idx[0], bin_idx[1]], start_dim=1)
 
             avg_loss += loss_function(prediction, target, emulator.invcov_blocks, True).item()
 
