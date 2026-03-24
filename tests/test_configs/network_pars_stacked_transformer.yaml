@@ -7,7 +7,7 @@ save_dir: ./tests/test_networks/stacked_transformer/
 training_dir: ./tests/test_configs/
 # Location of config file with cosmology + bias parameters
 # This file contains all of the parameter ranges
-cosmo_dir : ./configs/cosmo_pars/cosmo_pars_2t_2z.yaml
+cosmo_dir : ./tests/test_configs/cosmo_pars_2t_2z.yaml
 sampling_type : hypercube
 
 model_type : stacked_transformer
