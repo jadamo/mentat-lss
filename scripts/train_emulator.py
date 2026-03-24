@@ -30,7 +30,7 @@ def main():
         # spawn() usually behaves better than fork() on HPC
         mp.set_start_method("spawn", force=True)
         if emulator.model_type == "combined_tracer_transformer":
-            net_idx = torch.Tensor(list(range(emulator.num_zbins))).to(int)
+            net_idx = torch.Tensor(list(range(2 * emulator.num_zbins))).to(int)
         else:
             net_idx = torch.Tensor(list(itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)))).to(int)
         split_indices = net_idx.chunk(emulator.num_gpus)

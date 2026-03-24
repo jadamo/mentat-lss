@@ -41,8 +41,9 @@ def define_model(trial, cache_dir, default_config_file, device=None):
     trial_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = spectrum_embed_dim
     trial_config_file["batch_size"] = batch_size
     trial_config_file["galaxy_ps_learning_rate"] = learning_rate
-    # to save time, only train with 15% of the full data
+    # to save time, only train with 15% of the full data and for only 200 epochs
     trial_config_file["training_set_fraction"] = 0.15
+    trial_config_file["num_epochs"] = 200
 
     # Use an absolute path for save_dir so os.path.join(input_dir, save_dir) resolves
     # to this location regardless of what input_dir is set to.
