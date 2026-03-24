@@ -65,32 +65,42 @@ def test_transformer_block(embedding_dim, split_dim, expected):
         assert not torch.all(torch.isnan(test_output))
         assert not torch.all(torch.isinf(test_output))
 
-def test_stacked_transformer_network():
+@pytest.mark.parametrize("model_type", [
+    "stacked_transformer",
+    "combined_tracer_transformer",
+])
+def test_network_forward(model_type):
 
     current_dir = os.path.dirname(os.path.realpath(__file__))
-    test_dir = os.path.join(current_dir, "test_configs", "network_pars_stacked_transformer.yaml")
+    test_dir = os.path.join(current_dir, "test_configs", f"network_pars_{model_type}.yaml")
 
-    # constructes the network
     test_emulator = emulator.ps_emulator(test_dir, "train")
 
-    # generate a random input sequence and pass it through the network
-    test_input = torch.randn(1, test_emulator.num_cosmo_params + \
-                                (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
-                                device = test_emulator.device)
+    param_size = test_emulator.num_cosmo_params + \
+                 (test_emulator.num_nuisance_params * test_emulator.num_zbins * test_emulator.num_tracers)
+    test_input   = torch.randn(2, param_size, device=test_emulator.device)
+    test_input_2 = torch.randn(2, param_size, device=test_emulator.device)
+
     test_emulator.galaxy_ps_model.eval()
-    test_input = test_emulator.galaxy_ps_model.organize_parameters(test_input)
+    test_input   = test_emulator.galaxy_ps_model.organize_parameters(test_input)
+    test_input_2 = test_emulator.galaxy_ps_model.organize_parameters(test_input_2)
 
-    test_output_sub = test_emulator.galaxy_ps_model.forward(test_input, 0)
-    test_output_full = test_emulator.galaxy_ps_model.forward(test_input)
+    test_output_sub    = test_emulator.galaxy_ps_model.forward(test_input, 0)
+    test_output_full   = test_emulator.galaxy_ps_model.forward(test_input)
+    test_output_full_2 = test_emulator.galaxy_ps_model.forward(test_input_2)
 
-    assert torch.all(torch.isnan(test_output_full)) == False
-    assert torch.all(torch.isinf(test_output_full)) == False
+    output_dim = test_emulator.num_kbins * test_emulator.num_ells
 
-    assert test_output_sub.shape == (1, test_emulator.num_kbins * test_emulator.num_ells)
-    assert test_output_full.shape == (1, test_emulator.num_spectra,
-                                         test_emulator.num_zbins,
-                                         test_emulator.num_kbins*test_emulator.num_ells)
-    assert torch.allclose(test_output_sub, test_output_full[:,0,0])
+    assert test_output_full.shape == (2, test_emulator.num_spectra, test_emulator.num_zbins, output_dim)
+    assert not torch.all(torch.isnan(test_output_full))
+    assert not torch.all(torch.isinf(test_output_full))
+    assert not torch.allclose(test_output_full, test_output_full_2)
+
+    if model_type == "stacked_transformer":
+        assert test_output_sub.shape == (2, output_dim)
+        assert torch.allclose(test_output_sub, test_output_full[:, 0, 0])
+    else:
+        assert test_output_sub.shape == (2 * test_emulator.num_tracers, output_dim)
 
 def test_activation_functions():
 
@@ -148,41 +158,30 @@ def test_combined_tracer_transformer_organize_params():
                                                                            test_input[b, test_emulator.num_cosmo_params + idx2::iterate]]))
                     cross_iter += 1
 
-def test_combined_tracer_transformer_forward():
 
+@pytest.mark.parametrize("model_mode, expected", [
+    ("train", None),
+    ("eval", None),
+    ("invalid_mode", KeyError)
+])
+def test_emulator_mode(model_mode, expected):
     current_dir = os.path.dirname(os.path.realpath(__file__))
-    test_dir = os.path.join(current_dir, "test_configs", "network_pars_combined_tracer_transformer.yaml")
+    test_dir = os.path.join(current_dir, "test_configs", "network_pars_stacked_transformer.yaml")
+    if isinstance(expected, type) and issubclass(expected, Exception):
+        with pytest.raises(expected):
+            test_emulator = emulator.ps_emulator(test_dir, model_mode)
+    else:
 
-    # constructes the network
-    test_emulator = emulator.ps_emulator(test_dir, "train")
+        # need to train and save a model first to test loading in eval mode
+        if model_mode == "eval":
+            train_emulator = emulator.ps_emulator(test_dir, "train")
+            train_emulator._init_training_stats()
+            train_emulator._load_ps_properties(os.path.join(current_dir, "test_configs"))
+            train_emulator._save_model()
+            test_dir = os.path.join(current_dir, "test_networks", "stacked_transformer")
 
-    # generate a random input sequence and pass it through the network
-    test_input = torch.randn(2, test_emulator.num_cosmo_params + \
-                                (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
-                                device = test_emulator.device)
-    test_input_2 = torch.randn(2, test_emulator.num_cosmo_params + \
-                                (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
-                                device = test_emulator.device)
-
-    test_emulator.galaxy_ps_model.eval()
-    test_input = test_emulator.galaxy_ps_model.organize_parameters(test_input)
-    test_input_2 = test_emulator.galaxy_ps_model.organize_parameters(test_input_2)
-    test_output_sub = test_emulator.galaxy_ps_model.forward(test_input, 0)
-    test_output_full = test_emulator.galaxy_ps_model.forward(test_input)
-    test_output_full_2 = test_emulator.galaxy_ps_model.forward(test_input_2)
-
-    # net_idx=0 is auto network for z=0: output shape [batch*num_auto, output_dim]
-    assert test_output_sub.shape == (2*test_emulator.num_tracers, test_emulator.num_kbins * test_emulator.num_ells)
-    # full forward: [batch, num_spectra, num_zbins, output_dim]
-    assert test_output_full.shape == (2, test_emulator.num_spectra,
-                                         test_emulator.num_zbins,
-                                         test_emulator.num_kbins*test_emulator.num_ells)
-
-    assert torch.all(torch.isnan(test_output_full)) == False
-    assert torch.all(torch.isinf(test_output_full)) == False
-
-    # outputs for different inputs should not be the same
-    assert torch.allclose(test_output_full, test_output_full_2) == False
+        test_emulator = emulator.ps_emulator(test_dir, model_mode)
+        assert test_emulator.galaxy_ps_model is not None
 
 @pytest.mark.parametrize("model_type,", [
     ("stacked_transformer"),
@@ -210,3 +209,25 @@ def test_save_and_load(model_type):
 
     if os.path.exists(save_dir):
         os.system(f"rm -r {save_dir}")
+
+def test_get_power_spectra():
+
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+    test_dir = os.path.join(current_dir, "test_configs", "network_pars_stacked_transformer.yaml")
+
+    # constructes the network
+    test_emulator = emulator.ps_emulator(test_dir, "train")
+
+    # generate a random input sequence and pass it through the network
+    test_input = torch.randn(1, test_emulator.num_cosmo_params + \
+                                (test_emulator.num_nuisance_params *test_emulator.num_zbins * test_emulator.num_tracers),
+                                device = test_emulator.device)
+    test_emulator.galaxy_ps_model.eval()
+    test_output = test_emulator.get_power_spectra(test_input)
+
+    assert test_output.shape == (1, test_emulator.num_spectra,
+                                 test_emulator.num_zbins,
+                                 test_emulator.num_kbins,
+                                 test_emulator.num_ells)
+    assert np.all(np.isnan(test_output)) == False
+    assert np.all(np.isinf(test_output)) == False

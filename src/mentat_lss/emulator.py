@@ -6,7 +6,6 @@ import itertools
 import logging
 
 from mentat_lss.models import blocks
-from mentat_lss.models.stacked_mlp import stacked_mlp
 from mentat_lss.models.stacked_transformer import stacked_transformer
 from mentat_lss.models.combined_tracer_transformer import combined_tracer_transformer
 from mentat_lss.models.analytic_terms import analytic_eft_model
@@ -301,9 +300,7 @@ class ps_emulator():
     def _init_model(self):
         """Initializes the networks"""
         self.num_spectra = self.num_tracers + math.comb(self.num_tracers, 2)
-        if self.model_type == "stacked_mlp":
-            self.galaxy_ps_model = stacked_mlp(self.config_dict).to(self.device)
-        elif self.model_type == "stacked_transformer":
+        if self.model_type == "stacked_transformer":
             self.galaxy_ps_model = stacked_transformer(self.config_dict).to(self.device)
         elif self.model_type == "combined_tracer_transformer":
             self.galaxy_ps_model = combined_tracer_transformer(self.config_dict).to(self.device)
