@@ -5,6 +5,8 @@ import os, math
 import pytest
 import itertools
 
+from mentat_lss.utils import load_config_file
+from mentat_lss.emulator import compile_multiple_device_training_results
 import mentat_lss.emulator as emulator
 from mentat_lss.models.blocks import *
 
@@ -237,3 +239,93 @@ def test_get_power_spectra(model_type):
                                  test_emulator.num_ells)
     assert np.all(np.isnan(test_output)) == False
     assert np.all(np.isinf(test_output)) == False
+
+def bin_to_net_index(bin_idx, model_type):
+    if model_type == "stacked_transformer":
+        ps, z = bin_idx[0], bin_idx[1]
+        return (z * 3) + ps
+    else:
+        return bin_idx
+
+@pytest.mark.parametrize("model_type,", [
+    ("stacked_transformer"),
+    ("combined_tracer_transformer")
+])
+def test_compile_multiple_device_training_results(model_type):
+    current_dir = os.path.dirname(os.path.realpath(__file__))
+    test_config_dir = os.path.join(current_dir, "test_configs", f"network_pars_{model_type}.yaml")
+    test_config = load_config_file(test_config_dir)
+
+    if test_config["model_type"] == "stacked_transformer":
+        bin_idx = torch.Tensor(list(itertools.product(range(3), range(2)))).to(int)
+        num_nets = 3*2
+    else:
+        bin_idx = torch.Tensor(list(range(2 * 2))).to(int)
+        num_nets = 2*2
+
+    # constructes 2 networks and pretend they were trained on separate devices by generating fake training statistics for each and saving them to disk
+    test_emulator_1 = emulator.ps_emulator(test_config_dir, "train", device="cpu")
+    test_emulator_1._init_training_stats()
+    test_emulator_2 = emulator.ps_emulator(test_config_dir, "train", device="cpu")
+    test_emulator_2._init_training_stats()
+
+    for n in range(num_nets):
+
+        net_idx = bin_to_net_index(bin_idx[n], test_config["model_type"])
+        if n < num_nets // 2:
+            test_emulator_1.train_loss[net_idx] = torch.rand(100).tolist()
+            test_emulator_1.valid_loss[net_idx] = torch.rand(100).tolist()
+        else:
+            test_emulator_2.train_loss[net_idx] = torch.rand(100).tolist()
+            test_emulator_2.valid_loss[net_idx] = torch.rand(100).tolist()
+
+    test_emulator_1._load_ps_properties(os.path.join(current_dir, "test_data"))
+    test_emulator_1.save_dir += "rank_0/"
+    test_emulator_1._update_checkpoint()
+
+    test_emulator_2._load_ps_properties(os.path.join(current_dir, "test_data"))
+    test_emulator_2.save_dir += "rank_1/"
+    test_emulator_2._update_checkpoint()
+
+    # compile the training statistics
+    combined_emulator = compile_multiple_device_training_results(test_config["save_dir"], test_config_dir, 2)
+
+    def state_dicts_equal(model_a, model_b):
+        sd1, sd2 = model_a.state_dict(), model_b.state_dict()
+        return all(torch.equal(sd1[k], sd2[k]) for k in sd1)
+
+    # check that the combined emulator has the correct training statistics and network parameters
+    if test_config["model_type"] == "stacked_transformer":
+        for n in range(num_nets):
+            net_idx = bin_to_net_index(bin_idx[n], test_config["model_type"])
+            if n < num_nets // 2:
+                assert combined_emulator.train_loss[net_idx] == test_emulator_1.train_loss[net_idx]
+                assert combined_emulator.valid_loss[net_idx] == test_emulator_1.valid_loss[net_idx]
+                assert state_dicts_equal(combined_emulator.galaxy_ps_model.networks[net_idx],
+                                        test_emulator_1.galaxy_ps_model.networks[net_idx])
+            else:
+                assert combined_emulator.train_loss[net_idx] == test_emulator_2.train_loss[net_idx]
+                assert combined_emulator.valid_loss[net_idx] == test_emulator_2.valid_loss[net_idx]
+                assert state_dicts_equal(combined_emulator.galaxy_ps_model.networks[net_idx],
+                                        test_emulator_2.galaxy_ps_model.networks[net_idx])
+    else:
+        for n in range(num_nets):
+            net_idx = bin_to_net_index(bin_idx[n], test_config["model_type"])
+            is_cross = net_idx >= test_emulator_1.num_zbins
+            z = net_idx - test_emulator_1.num_zbins if is_cross else net_idx
+            ref_emulator = test_emulator_1 if n < num_nets // 2 else test_emulator_2
+
+            assert combined_emulator.train_loss[net_idx] == ref_emulator.train_loss[net_idx]
+            assert combined_emulator.valid_loss[net_idx] == ref_emulator.valid_loss[net_idx]
+            if is_cross:
+                assert state_dicts_equal(combined_emulator.galaxy_ps_model.cross_networks[z],
+                                        ref_emulator.galaxy_ps_model.cross_networks[z])
+            else:
+                assert state_dicts_equal(combined_emulator.galaxy_ps_model.auto_networks[z],
+                                        ref_emulator.galaxy_ps_model.auto_networks[z])
+
+    # clear the test save directory
+    if os.path.exists(os.path.join(test_config["save_dir"], "rank_0")):
+        os.system(f"rm -r {os.path.join(test_config['save_dir'], 'rank_0')}")
+    if os.path.exists(os.path.join(test_config["save_dir"], "rank_1")):
+        os.system(f"rm -r {os.path.join(test_config['save_dir'], 'rank_1')}")
