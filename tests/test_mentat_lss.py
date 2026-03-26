@@ -5,7 +5,7 @@ import yaml
 import shutil
 
 from mentat_lss.training_loops import train_on_single_device, train_on_multiple_devices
-from mentat_lss.utils import get_parameter_ranges, load_config_file, make_latin_hypercube, make_hypersphere, is_in_hypersphere, organize_training_set
+from mentat_lss.utils import get_parameter_ranges, load_config_file, make_latin_hypercube, make_hypersphere, is_in_hypersphere, organize_training_set, calc_chi2_statistics
 from mentat_lss.emulator import ps_emulator
 
 # This file contains e2e tests for the full mentat-lss package
@@ -82,6 +82,8 @@ def train_small_network(net_config_file):
     train_on_single_device(test_emulator)
     # TODO: Add branch for train_on_multiple_devices
 
+    return test_emulator
+
 
 def clean_small_training_set(net_dict):
     save_dir = net_dict["training_dir"]
@@ -114,6 +116,11 @@ def test_ps_emulator_workflow(net_type):
     clean_small_training_set(net_config) # in case previous test runs left files behind
     generate_small_training_set(cosmo_dict, net_config)
 
-    train_small_network(net_config_file)
+    test_emulator = train_small_network(net_config_file)
+    test_loader = test_emulator.load_data("testing", 1.0, True, net_config["training_dir"])
+
+    chi2_sub, chi2_combined = calc_chi2_statistics(test_emulator, test_loader)
+    assert np.all(np.isnan(chi2_sub)) == False, "Delta chi2 statistics contain NaN values. There may be an issue with the emulator predictions or the test dataset."
+    assert np.all(np.isnan(chi2_combined)) == False, "Delta chi2 statistics contain NaN values. There may be an issue with the emulator predictions or the test dataset."
 
     clean_small_training_set(net_config)

@@ -4,13 +4,13 @@ from torch.nn import functional as F
 import numpy as np
 import itertools
 import torch
-
+from tqdm import tqdm
 
 def load_config_file(config_file:str):
     """loads in the emulator config file as a dictionary object
     
     Args:
-        config_file: Config file path and name to laod
+        config_file: Config file path and name to load
     Raises:
         IOError: If config_file could not be read in
     """
@@ -505,6 +505,49 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
 
     return avg_loss / (len(data_loader.dataset))
 
+def calc_chi2_statistics(emulator, data_loader):
+    """Calculates the delta chi2 statistics of the emulator predictions on the given dataset, both for each individual sub-network and for the combined emulator output.
+
+    Args:
+        emulator (ps_emulator): emulator object to calculate the delta chi2 statistics with
+        data_loader (DataLoader): dataset to calculate the delta chi2 statistics on. Should be a Pytorch DataLoader object containing the test set.
+
+    Returns:
+        tuple: A tuple containing the delta chi2 statistics for each sub-network and the combined emulator output.
+    """
+    delta_chi2 = np.zeros((emulator.num_spectra, emulator.num_zbins, len(data_loader.dataset)))
+    delta_chi2_combined = np.zeros(len(data_loader.dataset))
+    save_idx = 0
+
+    # calculating delta chi2 in batches is much faster (~100x) than doing so individually
+    for (i, batch) in enumerate(tqdm(data_loader)):
+
+        params = batch[0].to("cpu").detach().numpy()
+        pk_idx = batch[2].to(torch.int)
+
+        pk_raw = data_loader.dataset.get_normalized_galaxy_power_spectra(pk_idx)
+        pk_true = data_loader.dataset.get_true_galaxy_power_spectra(pk_idx, emulator.ps_fid, emulator.sqrt_eigvals, 
+                                                        emulator.Q, emulator.Q_inv).to("cpu").detach()
+
+        pk_pred_raw = emulator.get_power_spectra(params, False, True)
+        pk_pred = emulator.get_power_spectra(params, False, False)
+
+        for j in range(len(pk_idx)):
+
+            #loop thru networks
+            for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
+                
+                prediction = pk_pred_raw[j, ps, z].unsqueeze(0)
+                target = pk_raw[j, ps, z].unsqueeze(0)
+
+                chi2 = delta_chi_squared(prediction, target, emulator.invcov_full, True)
+                delta_chi2[ps, z, save_idx] = chi2.item()
+
+            delta_chi2_combined[save_idx] = delta_chi_squared(pk_pred[j], pk_true[j], emulator.invcov_full, False)
+
+            save_idx += 1
+
+    return delta_chi2, delta_chi2_combined
 
 def normalize_cosmo_params(params:torch.Tensor, normalizations:torch.Tensor):
     """Linearly normalizes input cosmology + bias parameters to lie within the range [0,1]
