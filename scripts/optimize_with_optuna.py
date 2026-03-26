@@ -31,6 +31,9 @@ def define_model(trial, cache_dir, default_config_file, device=None):
     split_dim = trial.suggest_int("split_dim", 4, 10)
     split_size = trial.suggest_int("split_size", 10, 40)
     spectrum_embed_dim = trial.suggest_int("spectrum_embed_dim", 2, 10)
+    # num_heads must divide split_size (the per-token dimension); sample valid choices only
+    valid_heads = [h for h in [1, 2, 4] if split_size % h == 0]
+    num_heads = trial.suggest_categorical("num_heads", valid_heads)
 
     trial_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = num_mlp_blocks
     trial_config_file["galaxy_ps_emulator"]["num_block_layers"] = num_block_layers
@@ -39,11 +42,12 @@ def define_model(trial, cache_dir, default_config_file, device=None):
     trial_config_file["galaxy_ps_emulator"]["split_dim"] = split_dim
     trial_config_file["galaxy_ps_emulator"]["split_size"] = split_size
     trial_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = spectrum_embed_dim
+    trial_config_file["galaxy_ps_emulator"]["num_heads"] = num_heads
     trial_config_file["batch_size"] = batch_size
     trial_config_file["galaxy_ps_learning_rate"] = learning_rate
-    # to save time, only train with 15% of the full data and for only 200 epochs
-    trial_config_file["training_set_fraction"] = 0.15
-    trial_config_file["num_epochs"] = 200
+    # to save time, only train with 10% of the full data and for only 150 epochs
+    trial_config_file["training_set_fraction"] = 0.1
+    trial_config_file["num_epochs"] = 150
 
     # Use an absolute path for save_dir so os.path.join(input_dir, save_dir) resolves
     # to this location regardless of what input_dir is set to.
@@ -64,6 +68,7 @@ def save_best_params(save_loc, default_config_file, best_params):
     best_config_file["galaxy_ps_emulator"]["split_dim"] = best_params["split_dim"]
     best_config_file["galaxy_ps_emulator"]["split_size"] = best_params["split_size"]
     best_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = best_params["spectrum_embed_dim"]
+    best_config_file["galaxy_ps_emulator"]["num_heads"] = best_params["num_heads"]
     best_config_file["batch_size"] = best_params["batch_size"]
     best_config_file["galaxy_ps_learning_rate"] = best_params["learning_rate"]
 

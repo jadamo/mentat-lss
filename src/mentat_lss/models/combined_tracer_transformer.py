@@ -53,10 +53,11 @@ class single_zbin_transformer(nn.Module):
         self.embedding_layer = nn.Linear(self.output_dim, embedding_dim)
 
         # do one transformer block per z-bin for now
+        num_heads = config_dict["galaxy_ps_emulator"].get("num_heads", 1)
         self.transformer_blocks = nn.Sequential()
         for i in range(config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]):
             self.transformer_blocks.add_module("Transformer"+str(i+1),
-                    blocks.block_transformer_encoder(embedding_dim, split_dim, 0.1))
+                    blocks.block_transformer_encoder(embedding_dim, split_dim, 0.1, num_heads))
             self.transformer_blocks.add_module("Activation"+str(i+1),
                     blocks.activation_function(embedding_dim))
 
@@ -188,10 +189,9 @@ class combined_tracer_transformer(nn.Module):
             bsize = bsize_auto // self.num_auto_spectra
             X = torch.zeros((bsize, self.num_spectra, self.num_zbins, self.output_dim), device=auto_params.device)
             for z in range(self.num_zbins):
-                auto_out  = self.auto_networks[z](auto_params[:, z],  auto_spectrum_indices)   # [batch*num_auto, output_dim]
-                cross_out = self.cross_networks[z](cross_params[:, z], cross_spectrum_indices) # [batch*num_cross, output_dim]
-                auto_out  = auto_out.reshape(bsize,  self.num_auto_spectra,  self.output_dim)
-                cross_out = cross_out.reshape(bsize, self.num_cross_spectra, self.output_dim)
+                auto_out  = self.auto_networks[z](auto_params[:, z],  auto_spectrum_indices)
+                auto_out  = auto_out.reshape(bsize, self.num_auto_spectra, self.output_dim)
+                cross_out = self._symmetric_cross_forward(z, cross_params, cross_spectrum_indices, bsize)
                 X[:, self.auto_spectrum_indices,  z] = auto_out
                 X[:, self.cross_spectrum_indices, z] = cross_out
             return X
@@ -201,4 +201,32 @@ class combined_tracer_transformer(nn.Module):
         if not is_cross:
             return self.auto_networks[z](auto_params[:, z], auto_spectrum_indices)
         else:
-            return self.cross_networks[z](cross_params[:, z], cross_spectrum_indices)
+            bsize = bsize_cross // self.num_cross_spectra
+            return self._symmetric_cross_forward(z, cross_params, cross_spectrum_indices, bsize).reshape(-1, self.output_dim)
+
+    def _symmetric_cross_forward(self, z, cross_params, cross_spectrum_indices, bsize):
+        """Runs the cross network for z-bin z with symmetrization over the two tracer nuisance blocks.
+
+        P_12(k) = P_21(k) by symmetry, so we average the output for both tracer orderings.
+
+        Args:
+            z: z-bin index
+            cross_params: tensor of shape [batch*num_cross, num_zbins, nc + 2*nn]
+            cross_spectrum_indices: spectrum index tensor for the cross network
+            bsize: original batch size (before flattening with num_cross)
+
+        Returns:
+            cross_out: tensor of shape [bsize, num_cross_spectra, output_dim]
+        """
+        nc = self.num_cosmo_params
+        nn_ = self.num_nuisance_params
+        cross_params_rev = torch.cat([
+            cross_params[:, :, :nc],
+            cross_params[:, :, nc + nn_:nc + 2*nn_],  # nus_2 first
+            cross_params[:, :, nc:nc + nn_],           # nus_1 second
+        ], dim=-1)
+        
+        # do two forward-passes with the two tracer orderings and average the results
+        fwd = self.cross_networks[z](cross_params[:, z],     cross_spectrum_indices)
+        rev = self.cross_networks[z](cross_params_rev[:, z], cross_spectrum_indices)
+        return (0.5 * (fwd + rev)).reshape(bsize, self.num_cross_spectra, self.output_dim)

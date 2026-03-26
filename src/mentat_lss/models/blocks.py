@@ -217,13 +217,14 @@ class block_addnorm(nn.Module):
 class block_transformer_encoder(nn.Module):
     """Custom transformer encoder class"""
 
-    def __init__(self, embedding_dim:int, split_dim:int, dropout_prob=0.):
+    def __init__(self, embedding_dim:int, split_dim:int, dropout_prob=0., num_heads:int=1):
         """Initializes the transformer encoder block
 
         Args:
             embedding_dim (int): size of the embedded input to the block. Should be divisible by split_dim
-            split_dim (int): size of each independent feed-forward layer. Should be a factor of embedding_dim
-            dropout_prob (float, optional): probability a given weight is dropped during training. Defaults to 0..
+            split_dim (int): number of tokens the embedding is split into for attention. Should be a factor of embedding_dim
+            dropout_prob (float, optional): probability a given weight is dropped during training. Defaults to 0.
+            num_heads (int, optional): number of attention heads. Must divide embedding_dim // split_dim. Defaults to 1.
 
         Raises:
             ValueError: If hidden dim or split_dim are invalid. Both values must be > 0 and embedding_dim divisible by split_dim
@@ -231,22 +232,23 @@ class block_transformer_encoder(nn.Module):
         super().__init__()
         self.embedding_dim = embedding_dim
         self.split_dim = split_dim
-        self._check_inputs(embedding_dim, split_dim)
+        self._check_inputs(embedding_dim, split_dim, num_heads)
 
-        #self.attention = multi_headed_attention(self.embedding_dim, 1, dropout_prob)
-        self.attention = nn.MultiheadAttention(int(self.embedding_dim), 1, dropout_prob, batch_first=True)
+        token_dim = embedding_dim // split_dim
+        self.attention = nn.MultiheadAttention(token_dim, num_heads, dropout_prob, batch_first=True)
 
         #feed-forward network
-        self.h1 = linear_with_channels(int(self.embedding_dim/split_dim), int(self.embedding_dim/split_dim), split_dim)
-        self.activation = activation_function(int(self.embedding_dim/split_dim))
-        #self.addnorm2 = block_addnorm(self.embedding_dim, dropout_prob)
+        self.h1 = linear_with_channels(token_dim, token_dim, split_dim)
+        self.activation = activation_function(token_dim)
 
-    def _check_inputs(self, embedding_dim, split_dim):
+    def _check_inputs(self, embedding_dim, split_dim, num_heads):
         """Checks the input block parameters are valid"""
         if embedding_dim <= 0 or split_dim <= 0:
             raise ValueError(f"All block structure parameters must be >= 0, but got embedding_dim={embedding_dim} and split_dim={split_dim}")
         if embedding_dim % split_dim != 0:
             raise ValueError(f"Embedding dim must be divisible by split_dim, but got a remainder of {embedding_dim % split_dim}")
+        if (embedding_dim // split_dim) % num_heads != 0:
+            raise ValueError(f"Token dim (embedding_dim // split_dim = {embedding_dim // split_dim}) must be divisible by num_heads={num_heads}")
 
     def forward(self, X:torch.Tensor):
         """Passes through the transformer block
@@ -257,14 +259,10 @@ class block_transformer_encoder(nn.Module):
         Returns:
             X (torch.Tensor): Output of the block. Has shape (batch_size, embedding_dim)
         """
-        X = torch.unsqueeze(X, 1)
-        X = X + self.attention(X, X, X)[0]
-        X = X.reshape(-1, X.shape[2])
-
-        Y = X.reshape(-1, self.split_dim, int(self.embedding_dim / self.split_dim))
-        Y = self.activation(self.h1(Y))
-        X = X + Y.reshape(-1, self.embedding_dim)
-        return X
+        X = X.reshape(-1, self.split_dim, self.embedding_dim // self.split_dim)  # [b, split_dim, token_dim]
+        X = X + self.attention(X, X, X)[0]                                        # attend across split_dim tokens
+        Y = self.activation(self.h1(X))                                            # channel-wise feed-forward
+        return (X + Y).reshape(-1, self.embedding_dim)
 
 class activation_function(nn.Module):
     """Custom nonlinear activation function"""

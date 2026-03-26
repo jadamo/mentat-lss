@@ -51,11 +51,12 @@ class single_transformer(nn.Module):
         self.embedding_layer = nn.Linear(self.output_dim, embedding_dim)
 
         # do one transformer block per z-bin for now
+        num_heads = config_dict["galaxy_ps_emulator"].get("num_heads", 1)
         self.transformer_blocks = nn.Sequential()
         for i in range(config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]):
             self.transformer_blocks.add_module("Transformer"+str(i+1),
-                    blocks.block_transformer_encoder(embedding_dim, split_dim, 0.1))
-            self.transformer_blocks.add_module("Activation"+str(i+1), 
+                    blocks.block_transformer_encoder(embedding_dim, split_dim, 0.1, num_heads))
+            self.transformer_blocks.add_module("Activation"+str(i+1),
                     blocks.activation_function(embedding_dim))
 
         self.output_layer = nn.Linear(embedding_dim, self.output_dim)
