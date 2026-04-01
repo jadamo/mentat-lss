@@ -29,11 +29,11 @@ def define_model(trial, cache_dir, default_config_file, device=None):
     batch_size = trial.suggest_int("batch_size", 100, 1000)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2)
     split_dim = trial.suggest_int("split_dim", 4, 10)
-    split_size = trial.suggest_int("split_size", 10, 40)
+    # num_heads must divide split_size; fix split_size to multiples of 4 (LCM of 1,2,4)
+    # so any sampled num_heads always satisfies the constraint with no rounding needed.
+    num_heads = trial.suggest_categorical("num_heads", [1, 2, 4])
+    split_size = trial.suggest_int("split_size", 12, 40, step=4)
     spectrum_embed_dim = trial.suggest_int("spectrum_embed_dim", 2, 10)
-    # num_heads must divide split_size (the per-token dimension); sample valid choices only
-    valid_heads = [h for h in [1, 2, 4] if split_size % h == 0]
-    num_heads = trial.suggest_categorical("num_heads", valid_heads)
 
     trial_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = num_mlp_blocks
     trial_config_file["galaxy_ps_emulator"]["num_block_layers"] = num_block_layers
@@ -136,20 +136,24 @@ def main():
     logger = logging.getLogger("")
     try:
         node_id = int(os.environ.get("SLURM_NODEID", 0))
+        num_nodes = int(os.environ.get("SLURM_NNODES", 1))
     except (ValueError, TypeError):
         node_id = 0
+        num_nodes = 1
         logger.warning("Failed to parse SLURM_NODEID, defaulting to 0")
     num_gpus = torch.cuda.device_count() # <- GPUs on the given node
     db_path = command_line_args.db_path
 
     # Create study once (workers load it)
-    optuna.create_study(
-        direction="minimize",
-        storage=f"sqlite:///{db_path}",
-        study_name="combined_tracer",
-        pruner=optuna.pruners.MedianPruner(),
-        load_if_exists=True
-    )
+    try:
+        optuna.create_study(
+            direction="minimize",
+            storage=f"sqlite:///{db_path}",
+            study_name="combined_tracer",
+            pruner=optuna.pruners.MedianPruner(),
+        )
+    except optuna.exceptions.DuplicatedStudyError:
+        pass  # another node created the study first
 
     cache_dir = os.path.abspath(os.path.join(command_line_args.cache_dir, f"node{node_id}"))
     logger.info(f"Node {node_id} creating cache directory {cache_dir}...")
@@ -172,7 +176,7 @@ def main():
         mp.set_start_method("spawn", force=True)
         mp.spawn(
             run_worker,
-            args=(cache_dir, default_config_file, command_line_args.n_trials // num_gpus, db_path),
+            args=(cache_dir, default_config_file, command_line_args.n_trials // num_gpus // num_nodes, db_path),
             nprocs=num_gpus,
             join=True
         )
