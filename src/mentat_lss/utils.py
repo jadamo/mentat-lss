@@ -525,6 +525,172 @@ def normalize_power_spectrum(ps_raw:torch.Tensor, ps_fid:torch.Tensor, sqrt_eigv
     return ps_norm
 
 
+def rearange_to_half(C:torch.Tensor):
+    """Compresses a batch of lower-triangular matrices by removing zero elements.
+
+    Takes a batch of matrices (B, N, N) and rearranges the lower half of each matrix
+    to a rectangular (B, N+1, N/2) shape.
+
+    Args:
+        C (torch.Tensor): batch of square, lower-triangular matrices to reshape. Should have shape (B, N, N)
+
+    Returns:
+        compressed (torch.Tensor): batch of compressed matrices with zero elements removed. Has shape (B, N+1, N/2)
+    """
+    device = C.device
+    B = C.shape[0]
+    N = C.shape[1]
+    N_half = int(N / 2)
+    L1 = torch.tril(C)[:, :, :N_half]
+    L2 = torch.tril(C)[:, :, N_half:]
+    L1 = torch.cat((torch.zeros((B, 1, N_half), device=device), L1), 1)
+    L2 = torch.cat((torch.flip(L2, [1, 2]), torch.zeros((B, 1, N_half), device=device)), 1)
+    return L1 + L2
+
+
+def rearange_to_full(C_half:torch.Tensor, lower_triangular:bool=False):
+    """Un-compresses a batch of lower-triangular matrices.
+
+    Takes a batch of half matrices (B, N+1, N/2) and reverses the rearrangement to return full,
+    symmetric matrices (B, N, N). This is the reverse operation of rearange_to_half.
+
+    Args:
+        C_half (torch.Tensor): batch of compressed matrices with zeros removed. Should have shape (B, N+1, N/2)
+        lower_triangular (bool, optional): if True, returns only the lower triangular part instead of
+            reflecting over the diagonal. Defaults to False.
+
+    Returns:
+        C_full (torch.Tensor): batch of full matrices. Has shape (B, N, N)
+    """
+    device = C_half.device
+    N = C_half.shape[1] - 1
+    N_half = int(N / 2)
+    B = C_half.shape[0]
+    C_full = torch.zeros((B, N, N), device=device)
+    C_full[:, :, :N_half] = C_full[:, :, :N_half] + C_half[:, 1:, :]
+    C_full[:, :, N_half:] = C_full[:, :, N_half:] + torch.flip(C_half[:, :-1, :], [1, 2])
+    L = torch.tril(C_full)
+    if lower_triangular:
+        return L
+    U = torch.transpose(torch.tril(C_full, diagonal=-1), 1, 2)
+    return L + U
+
+
+def symmetric_log(m:torch.Tensor, pos_norm:float, neg_norm:float):
+    """Applies a piecewise normalized logarithm to a batch of matrices.
+
+    Useful for pre-processing covariance matrices before network training. The transformation is:
+    sym_log(x) =  log10(x+1) / pos_norm,  x >= 0
+    sym_log(x) = -log10(-x+1) / neg_norm, x < 0
+
+    Args:
+        m (torch.Tensor): batch of matrices to normalize
+        pos_norm (float): value to normalize positive elements with
+        neg_norm (float): value to normalize negative elements with
+
+    Returns:
+        m_log (torch.Tensor): normalized matrices with the same shape as m
+    """
+    device = m.device
+    pos_m = torch.zeros(m.shape, device=device)
+    neg_m = torch.zeros(m.shape, device=device)
+    pos_idx = torch.where(m >= 0)
+    neg_idx = torch.where(m < 0)
+    pos_m[pos_idx] = torch.log10(m[pos_idx] + 1)
+    neg_m[neg_idx] = -torch.log10(-1 * m[neg_idx] + 1)
+    return (pos_m / pos_norm) + (neg_m / neg_norm)
+
+
+def symmetric_exp(m:torch.Tensor, pos_norm:float, neg_norm:float):
+    """Reverses the symmetric_log transformation.
+
+    Applies the piecewise inverse:
+    sym_exp(x) =  10^(x*pos_norm) - 1,   x >= 0
+    sym_exp(x) = -10^(-x*neg_norm) + 1,  x < 0
+
+    Args:
+        m (torch.Tensor): batch of matrices to reverse-normalize
+        pos_norm (float): value used to normalize positive matrix elements
+        neg_norm (float): value used to normalize negative matrix elements
+
+    Returns:
+        m_exp (torch.Tensor): reverse-normalized matrices with the same shape as m
+    """
+    device = m.device
+    pos_m = torch.zeros(m.shape, device=device)
+    neg_m = torch.zeros(m.shape, device=device)
+    pos_idx = torch.where(m >= 0)
+    neg_idx = torch.where(m < 0)
+    pos_m[pos_idx] = m[pos_idx] * pos_norm
+    neg_m[neg_idx] = m[neg_idx] * neg_norm
+    pos_m = 10**pos_m - 1
+    pos_m[pos_m == 1] = 0
+    neg_m[neg_idx] = -10**(-1 * neg_m[neg_idx]) + 1
+    return pos_m + neg_m
+
+
+def organize_cov_training_set(training_dir:str, train_frac:float, valid_frac:float, test_frac:float,
+                               params_dim:int, mat_dim:int, remove_old_files:bool=True):
+    """Reorganizes raw covariance matrix data files into training, validation, and test sets.
+
+    Loads all files matching the "CovA-" prefix from training_dir and splits them
+    according to the given fractions, saving results as CovA-training.npz,
+    CovA-validation.npz, and CovA-testing.npz.
+
+    Args:
+        training_dir (str): directory containing raw covariance matrix files to organize
+        train_frac (float): fraction of dataset to partition as the training set
+        valid_frac (float): fraction of dataset to partition as the validation set
+        test_frac (float): fraction of dataset to partition as the test set
+        params_dim (int): dimension of input parameter arrays
+        mat_dim (int): dimension of the square covariance matrices (N for an N×N matrix)
+        remove_old_files (bool, optional): if True, deletes original data files after loading.
+            Defaults to True.
+
+    Raises:
+        AssertionError: if train_frac + valid_frac + test_frac > 1
+    """
+    all_filenames = next(os.walk(training_dir), (None, None, []))[2]
+
+    all_params = np.array([], dtype=np.float64).reshape(0, params_dim)
+    all_C_G    = np.array([], dtype=np.float64).reshape(0, mat_dim, mat_dim)
+    all_C_NG   = np.array([], dtype=np.float64).reshape(0, mat_dim, mat_dim)
+
+    for file in all_filenames:
+        if "CovA-" in file:
+            data = np.load(os.path.join(training_dir, file), allow_pickle=True)
+            all_params = np.vstack([all_params, data["params"]])
+            all_C_G    = np.vstack([all_C_G,    data["C_G"]])
+            all_C_NG   = np.vstack([all_C_NG,   data["C_NG"]])
+            del data
+
+    N       = all_params.shape[0]
+    N_train = int(N * train_frac)
+    N_valid = int(N * valid_frac)
+    N_test  = int(N * test_frac)
+    assert N_train + N_valid + N_test <= N
+
+    valid_start = N_train
+    valid_end   = N_train + N_valid
+    test_end    = N_train + N_valid + N_test
+
+    if remove_old_files:
+        for file in all_filenames:
+            if "CovA-" in file:
+                os.remove(os.path.join(training_dir, file))
+
+    print("splitting dataset into chunks of size [{:0.0f}, {:0.0f}, {:0.0f}]...".format(N_train, N_valid, N_test))
+
+    np.savez(os.path.join(training_dir, "CovA-training.npz"),
+             params=all_params[:N_train], C_G=all_C_G[:N_train], C_NG=all_C_NG[:N_train])
+    np.savez(os.path.join(training_dir, "CovA-validation.npz"),
+             params=all_params[valid_start:valid_end],
+             C_G=all_C_G[valid_start:valid_end], C_NG=all_C_NG[valid_start:valid_end])
+    np.savez(os.path.join(training_dir, "CovA-testing.npz"),
+             params=all_params[valid_end:test_end],
+             C_G=all_C_G[valid_end:test_end], C_NG=all_C_NG[valid_end:test_end])
+
+
 def un_normalize_power_spectrum(ps_raw:torch.Tensor, ps_fid:torch.Tensor, sqrt_eigvals:torch.Tensor, Q:torch.Tensor, Q_inv:torch.Tensor):
     """Reverses normalization of a batch of output power spectru based on the method developed by http://arxiv.org/abs/2403.12337
 

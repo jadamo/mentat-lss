@@ -97,6 +97,51 @@ class block_resnet(nn.Module):
         Y = self.layers(X)
         return Y + self.bn(self.skip_layer(X))
 
+class block_cov_resnet(nn.Module):
+    """Residual network block for the covariance matrix emulator.
+
+    Uses a fixed 4-layer structure with batch normalization and leaky ReLU
+    activations, including batch normalization on the skip connection.
+    """
+
+    def __init__(self, dim_in:int, dim_out:int):
+        """Initializes the residual block.
+
+        Args:
+            dim_in (int): size of the input dimension. Should be > 0
+            dim_out (int): size of the output dimension. Should be > 0
+        """
+        super().__init__()
+
+        self.h1 = nn.Linear(dim_in, dim_out)
+        self.bn1 = nn.BatchNorm1d(dim_out)
+        self.h2 = nn.Linear(dim_out, dim_out)
+        self.bn2 = nn.BatchNorm1d(dim_out)
+        self.h3 = nn.Linear(dim_out, dim_out)
+        self.bn3 = nn.BatchNorm1d(dim_out)
+        self.h4 = nn.Linear(dim_out, dim_out)
+
+        self.skip = nn.Linear(dim_in, dim_out)
+        self.bn_skip = nn.BatchNorm1d(dim_out)
+
+    def forward(self, X:torch.Tensor):
+        """Passes input through the block.
+
+        Args:
+            X (torch.Tensor): input to the block. Should have shape (batch_size, dim_in)
+
+        Returns:
+            X (torch.Tensor): output of the block. Has shape (batch_size, dim_out)
+        """
+        residual = X
+        X = F.leaky_relu(self.bn1(self.h1(X)))
+        X = F.leaky_relu(self.bn2(self.h2(X)))
+        X = F.leaky_relu(self.bn3(self.h3(X)))
+        residual = self.bn_skip(self.skip(residual))
+        X = F.leaky_relu(self.h4(X) + residual)
+        return X
+
+
 class multi_headed_attention(nn.Module):
 
     def __init__(self, hidden_dim, num_heads=2, dropout_prob=0.):

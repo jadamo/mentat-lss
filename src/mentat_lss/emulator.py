@@ -9,11 +9,12 @@ from mentat_lss.models import blocks
 from mentat_lss.models.stacked_mlp import stacked_mlp
 from mentat_lss.models.stacked_transformer import stacked_transformer
 from mentat_lss.models.analytic_terms import analytic_eft_model
-from mentat_lss.dataset import pk_galaxy_dataset
+from mentat_lss.models.cov_mlp import stacked_cov_network
+from mentat_lss.dataset import pk_galaxy_dataset, cov_matrix_dataset
 from mentat_lss.utils import load_config_file, get_parameter_ranges,\
                               normalize_cosmo_params, un_normalize_power_spectrum, \
                               delta_chi_squared, mse_loss, hyperbolic_loss, hyperbolic_chi2_loss, \
-                              get_invcov_blocks, get_full_invcov, is_in_hypersphere
+                              get_invcov_blocks, get_full_invcov, is_in_hypersphere, symmetric_exp
 
 class ps_emulator():
     """Class defining the neural network emulator."""
@@ -588,5 +589,303 @@ def compile_multiple_device_training_results(save_dir:str, config_dir:str, num_g
             full_emulator.train_time = train_data[2,0]
 
     full_emulator.galaxy_ps_checkpoint = copy.deepcopy(full_emulator.galaxy_ps_model.state_dict())
-    
+
     return full_emulator
+
+
+# --------------------------------------------------------------------------
+# Covariance matrix emulator
+# --------------------------------------------------------------------------
+class cov_emulator():
+    """Class defining the covariance matrix emulator.
+
+    Wraps a stacked_cov_network (one sub-network per redshift bin) for both
+    training and evaluation. Parameter bounds are read from the same cosmology
+    config YAML used by ps_emulator, and normalization is applied externally
+    (consistently with the ps_emulator pattern).
+
+    In evaluation mode the primary user-facing method is get_covariance_matrix.
+    In training mode, use load_data to retrieve DataLoaders and then call the
+    functions in training_loops.py.
+    """
+
+    def __init__(self, net_dir:str, mode:str="train", device:torch.device=None):
+        """Emulator constructor, initializes the network and all supporting data.
+
+        Args:
+            net_dir (str): path to either the directory or full filepath of the emulator
+                config. If a directory, assumes the config file is named "config.yaml".
+            mode (str, optional): one of ["train", "eval"]. Defaults to "train".
+            device (torch.device, optional): device to run on. If None, selects any
+                available GPU (or MPS on macOS), falling back to CPU. Defaults to None.
+
+        Raises:
+            KeyError: if mode is not one of ["train", "eval"]
+            IOError: if no config yaml file is found at net_dir
+        """
+        if net_dir.endswith(".yaml"):
+            self.config_dict = load_config_file(net_dir)
+        else:
+            self.config_dict = load_config_file(os.path.join(net_dir, "config.yaml"))
+
+        self.logger = logging.getLogger("cov_emulator")
+
+        for key in self.config_dict:
+            setattr(self, key, self.config_dict[key])
+
+        self._init_device(device, mode)
+        self._init_model()
+
+        if mode == "train":
+            self.logger.debug("Initializing covariance emulator in training mode")
+            self._init_input_normalizations()
+            # norm values are computed lazily from the training data on first load_data call
+            self.norm_pos = 0.
+            self.norm_neg = 0.
+            self.cov_model.apply(self._init_weights)
+            self.cov_checkpoint = copy.deepcopy(self.cov_model.state_dict())
+
+        elif mode == "eval":
+            self.logger.debug("Initializing covariance emulator in evaluation mode")
+            self.load_trained_model(net_dir)
+
+        else:
+            raise KeyError(f"Invalid mode specified! Must be one of ['train', 'eval'] but was {mode}.")
+
+
+    def load_trained_model(self, path:str):
+        """Loads a pre-trained network from file.
+
+        This is called automatically by the constructor in eval mode, but can also
+        be called directly to reload a checkpoint.
+
+        Args:
+            path (str): directory containing network_cov.params, normalizations.pt,
+                and input_normalizations.pt
+        """
+        self.logger.info(f"loading covariance emulator from {path}")
+        self.cov_model.eval()
+        self.cov_model.load_state_dict(
+            torch.load(os.path.join(path, "network_cov.params"),
+                       weights_only=True, map_location=self.device))
+
+        norm_data = torch.load(os.path.join(path, "normalizations.pt"),
+                               map_location="cpu", weights_only=True)
+        self.norm_pos = norm_data[0]
+        self.norm_neg = norm_data[1]
+
+        input_norm_data = torch.load(os.path.join(path, "input_normalizations.pt"),
+                                     map_location=self.device, weights_only=True)
+        self.input_normalizations = input_norm_data[0]
+        self.required_emu_params  = input_norm_data[1]
+
+
+    def load_data(self, type:str, frac:float=1., return_dataloader:bool=True):
+        """Loads a covariance matrix dataset from disk.
+
+        For the training set, the matrix normalization values (norm_pos, norm_neg)
+        are computed from the data on the first call and stored on the emulator for
+        use with validation/test sets.
+
+        Args:
+            type (str): one of ["training", "validation", "testing"]
+            frac (float, optional): fraction of the dataset to load. Defaults to 1.0.
+            return_dataloader (bool, optional): if True, wraps the dataset in a
+                DataLoader. Defaults to True.
+
+        Returns:
+            loader (DataLoader or cov_matrix_dataset): the loaded data
+        """
+        data_dir = os.path.join(self.input_dir, self.training_dir)
+
+        dataset = cov_matrix_dataset(data_dir, type, frac,
+                                     gaussian_only=self.train_gaussian_only,
+                                     pos_norm=self.norm_pos, neg_norm=self.norm_neg)
+
+        # store matrix normalization values from the training set for reuse
+        if type.lower() == "training":
+            self.norm_pos = dataset.norm_pos
+            self.norm_neg = dataset.norm_neg
+
+        dataset.to(self.device)
+
+        if return_dataloader:
+            return torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        return dataset
+
+
+    def get_covariance_matrix(self, params, z_idx:int=0, raw:bool=False):
+        """Uses the emulator to return a covariance matrix for a given redshift bin.
+
+        Args:
+            params (np.ndarray or torch.Tensor): 1D array of input cosmology + bias
+                parameters in the same flat ordering used during training.
+            z_idx (int, optional): index of the redshift bin to evaluate. Defaults to 0.
+            raw (bool, optional): if True, returns the raw Cholesky factor without
+                reversing pre-processing. Defaults to False.
+
+        Returns:
+            matrix (np.ndarray or torch.Tensor): if raw is False, returns the full
+                symmetric covariance matrix as a numpy array with shape
+                (output_dim, output_dim). If raw is True, returns the Tensor
+                Cholesky factor.
+
+        Raises:
+            TypeError: if params is not a numpy array or torch Tensor
+        """
+        if isinstance(params, np.ndarray):
+            params = torch.from_numpy(params).to(torch.float32)
+        elif not isinstance(params, torch.Tensor):
+            raise TypeError(f"params must be a numpy array or torch.Tensor, but got {type(params)}")
+
+        params = params.to(self.device)
+        if params.dim() == 1:
+            params = params.unsqueeze(0)
+
+        org_params  = self.cov_model.organize_parameters(params)
+        norm_params = normalize_cosmo_params(org_params, self.input_normalizations)
+
+        with torch.no_grad():
+            matrix = self.cov_model(norm_params, z_idx=z_idx)
+
+        if raw:
+            return matrix
+
+        matrix = symmetric_exp(matrix, self.norm_pos, self.norm_neg)
+        matrix = matrix.squeeze(0).to("cpu").detach().numpy().astype(np.float64)
+        matrix = np.matmul(matrix, matrix.T)
+        return matrix
+
+
+    def _init_device(self, device:torch.device, mode:str):
+        """Selects and stores the compute device.
+
+        Args:
+            device (torch.device): user-specified device, or None for auto-selection
+            mode (str): "train" or "eval"
+        """
+        if device is not None:
+            self.device = device
+        elif torch.cuda.is_available():
+            self.device = torch.device("cuda:0")
+        elif torch.backends.mps.is_available():
+            self.device = torch.device("mps")
+        else:
+            self.device = torch.device("cpu")
+        self.logger.debug(f"using device: {self.device}")
+
+
+    def _init_model(self):
+        """Builds the stacked_cov_network and moves it to the selected device."""
+        self.cov_model = stacked_cov_network(self.config_dict).to(self.device)
+
+
+    def _init_input_normalizations(self):
+        """Reads parameter bounds from the cosmology config and organizes them per zbin.
+
+        Follows the same pattern as ps_emulator._init_input_normalizations.
+        The resulting input_normalizations tensor has shape
+        (2, num_zbins, num_cosmo_params + num_nuisance_params * num_tracers),
+        where index 0 is the lower bound and index 1 is the upper bound.
+        """
+        cosmo_dict = load_config_file(os.path.join(self.input_dir, self.cosmo_dir))
+        param_names, param_bounds = get_parameter_ranges(cosmo_dict)
+
+        flat_bounds = torch.Tensor(param_bounds.T).to(self.device)  # shape (2, n_params)
+
+        # organize flat bounds into per-zbin shape using the same parameter
+        # ordering convention as stacked_cov_network.organize_parameters
+        lower = self.cov_model.organize_parameters(flat_bounds[0].unsqueeze(0)).squeeze(0)
+        upper = self.cov_model.organize_parameters(flat_bounds[1].unsqueeze(0)).squeeze(0)
+        self.input_normalizations = torch.stack([lower, upper])  # (2, num_zbins, per_net_dim)
+
+        self.required_emu_params = param_names
+
+
+    def _init_weights(self, m):
+        """Initializes layer weights according to the scheme in config_dict.
+
+        Args:
+            m (nn.Module): layer to initialize
+        """
+        if isinstance(m, nn.Linear):
+            scheme = self.weight_initialization
+            if scheme == "He":
+                nn.init.kaiming_uniform_(m.weight)
+            elif scheme == "normal":
+                nn.init.normal_(m.weight, mean=0., std=0.1)
+                nn.init.zeros_(m.bias)
+            elif scheme == "xavier":
+                nn.init.xavier_normal_(m.weight)
+            else:
+                nn.init.normal_(m.weight, mean=0., std=0.1)
+                nn.init.zeros_(m.bias)
+
+
+    def _init_training_stats(self):
+        """Initializes per-zbin training loss history lists."""
+        self.train_loss = [[] for _ in range(self.num_zbins)]
+        self.valid_loss = [[] for _ in range(self.num_zbins)]
+        self.train_time = 0.
+
+
+    def _init_optimizer(self):
+        """Sets up one Adam optimizer and ReduceLROnPlateau scheduler per zbin."""
+        self.optimizer = []
+        self.scheduler = []
+        for z in range(self.num_zbins):
+            if self.optimizer_type == "Adam":
+                opt = torch.optim.Adam(self.cov_model.networks[z].parameters(),
+                                       lr=self.learning_rate)
+            else:
+                raise KeyError(f"Invalid optimizer type! Must be 'Adam', but got {self.optimizer_type}")
+            self.optimizer.append(opt)
+            self.scheduler.append(
+                torch.optim.lr_scheduler.ReduceLROnPlateau(opt, "min", factor=0.1, patience=15))
+
+
+    def _update_checkpoint(self, z_idx:int):
+        """Saves the current state of the network for zbin z_idx as the best checkpoint.
+
+        Args:
+            z_idx (int): index of the redshift bin whose checkpoint to update
+        """
+        new_state = self.cov_model.state_dict()
+        for name in new_state.keys():
+            if f"networks.{z_idx}." in name:
+                self.cov_checkpoint[name] = new_state[name]
+        self._save_model()
+
+
+    def _save_model(self):
+        """Saves the model, normalizations, and training statistics to disk."""
+        save_dir = os.path.join(self.input_dir, self.save_dir)
+        training_data_dir = os.path.join(save_dir, "training_statistics")
+
+        if not os.path.exists(save_dir):
+            os.makedirs(save_dir)
+        if not os.path.exists(training_data_dir):
+            os.makedirs(training_data_dir)
+
+        # per-zbin training statistics
+        for z in range(self.num_zbins):
+            if len(self.train_loss[z]) > 0:
+                training_data = torch.vstack([torch.Tensor(self.train_loss[z]),
+                                              torch.Tensor(self.valid_loss[z])])
+                torch.save(training_data,
+                           os.path.join(training_data_dir, f"train_data_z{z}.dat"))
+
+        # configuration
+        with open(os.path.join(save_dir, "config.yaml"), "w") as outfile:
+            yaml.dump(dict(self.config_dict), outfile, sort_keys=False, default_flow_style=False)
+
+        # matrix normalization values
+        torch.save([self.norm_pos, self.norm_neg],
+                   os.path.join(save_dir, "normalizations.pt"))
+
+        # input parameter normalization values
+        torch.save([self.input_normalizations, self.required_emu_params],
+                   os.path.join(save_dir, "input_normalizations.pt"))
+
+        # network weights (best checkpoint)
+        torch.save(self.cov_checkpoint, os.path.join(save_dir, "network_cov.params"))

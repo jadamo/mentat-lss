@@ -1,0 +1,46 @@
+# directory that all other paths are relative to
+input_dir: /path/to/your/project/
+# Where to save the trained network
+save_dir: ./emulators/cov_emulator_example/
+# Where your training set lives (CovA-training.npz, CovA-validation.npz, CovA-testing.npz)
+training_dir: /path/to/training_data/
+# Location of config file with cosmology + bias parameters (same format as ps_emulator)
+# Parameter bounds are read from priors defined in this file
+cosmo_dir: ./configs/cosmo_pars/cosmo_pars_example.yaml
+
+# Dataset dimensions — must be consistent with cosmo_dir and the training data
+num_cosmo_params:    5   # number of cosmological parameters with priors in cosmo_dir
+num_nuisance_params: 3   # number of nuisance (bias) parameters per tracer
+num_tracers: 2           # number of galaxy tracers; one multi-tracer covariance matrix per zbin
+num_zbins:   2           # number of independent redshift bins
+
+# Network architecture: "MLP" for a pure MLP, "MLP-T" for MLP + Transformer
+architecture: MLP-T
+
+# Dimension N of the output N×N covariance matrix (= num_spectra * num_kbins for your analysis)
+output_dim: 20
+
+# MLP block widths. Length must equal num_mlp_blocks + 1
+mlp_dims: [512, 1024, 1024]
+num_mlp_blocks: 2
+
+# Transformer parameters (only used when architecture: MLP-T)
+# The compressed matrix has shape (output_dim+1, output_dim/2) = (21, 10) for output_dim=20.
+# patch_size must evenly divide both dimensions: 21 / patch_size[0] and 10 / patch_size[1]
+num_transformer_blocks: 5
+num_heads: 3
+patch_size: [3, 5]   # -> sequence length = 15, number of patches = 14
+embedding: True      # whether to add sinusoidal positional embeddings
+dropout_prob: 0.0
+
+# Whether to train on the Gaussian-only term (C_G) instead of C_G + C_NG
+train_gaussian_only: False
+
+# Training parameters
+num_epochs: 300
+batch_size: 600
+learning_rate: 1.4e-3
+early_stopping_epochs: 25
+training_set_fraction: 1.0
+weight_initialization: He   # one of [He, normal, xavier]
+optimizer_type: Adam

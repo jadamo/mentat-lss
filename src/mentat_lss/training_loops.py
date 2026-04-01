@@ -4,7 +4,7 @@ import itertools
 import logging
 import os
 
-from mentat_lss.emulator import ps_emulator, compile_multiple_device_training_results
+from mentat_lss.emulator import ps_emulator, cov_emulator, compile_multiple_device_training_results
 from mentat_lss.utils import calc_avg_loss, normalize_cosmo_params
 
 
@@ -167,3 +167,125 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
             emulator.logger.info("Checkpointing progress from all devices...")
             full_emulator = compile_multiple_device_training_results(base_save_dir, config_dir, emulator.num_gpus)
             full_emulator._save_model()
+
+
+def train_cov_one_epoch(emulator:cov_emulator, train_loader:torch.utils.data.DataLoader, z_idx:int):
+    """Runs through one epoch of training for one redshift bin of the covariance emulator.
+
+    Args:
+        emulator (cov_emulator): emulator object to train
+        train_loader (torch.utils.data.DataLoader): training data to loop through
+        z_idx (int): index of the redshift bin sub-network to train
+
+    Returns:
+        avg_loss (float): average training-set L1 loss for this epoch
+    """
+    from torch.nn import functional as F
+
+    total_loss = 0.
+    total_time = 0.
+    emulator.cov_model.train()
+
+    for params, matrices in train_loader:
+        t1 = time.time()
+
+        org_params  = emulator.cov_model.organize_parameters(params)
+        norm_params = normalize_cosmo_params(org_params, emulator.input_normalizations)
+        prediction  = emulator.cov_model(norm_params, z_idx=z_idx)
+        target      = matrices[:, z_idx]
+
+        loss = F.l1_loss(prediction, target, reduction="sum")
+
+        assert torch.isnan(loss) == False
+        assert torch.isinf(loss) == False
+
+        emulator.optimizer[z_idx].zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(emulator.cov_model.networks[z_idx].parameters(), 1e8)
+        emulator.optimizer[z_idx].step()
+
+        total_loss += loss.detach()
+        total_time += time.time() - t1
+
+    emulator.logger.debug("z={:d}, time for epoch: {:.1f}s, time per batch: {:.1f}ms".format(
+        z_idx, total_time, 1000 * total_time / len(train_loader)))
+    return (total_loss / len(train_loader.dataset)).item()
+
+
+def _calc_avg_cov_loss(emulator:cov_emulator, data_loader:torch.utils.data.DataLoader, z_idx:int):
+    """Calculates the average L1 loss for one redshift bin over the given dataset.
+
+    Args:
+        emulator (cov_emulator): emulator object to evaluate
+        data_loader (torch.utils.data.DataLoader): dataset to evaluate on
+        z_idx (int): index of the redshift bin to evaluate
+
+    Returns:
+        avg_loss (float): average L1 loss per sample
+    """
+    from torch.nn import functional as F
+
+    emulator.cov_model.eval()
+    avg_loss = 0.
+    with torch.no_grad():
+        for params, matrices in data_loader:
+            org_params  = emulator.cov_model.organize_parameters(params)
+            norm_params = normalize_cosmo_params(org_params, emulator.input_normalizations)
+            prediction  = emulator.cov_model(norm_params, z_idx=z_idx)
+            target      = matrices[:, z_idx]
+            avg_loss += F.l1_loss(prediction, target, reduction="sum").item()
+    return avg_loss / len(data_loader.dataset)
+
+
+def train_cov_on_single_device(emulator:cov_emulator):
+    """Trains the covariance emulator on a single device (CPU or GPU).
+
+    Trains each redshift-bin sub-network independently with early stopping
+    per zbin. The best checkpoint per zbin (by validation loss) is saved to
+    disk via emulator._update_checkpoint(z_idx).
+
+    Args:
+        emulator (cov_emulator): emulator object to train
+    """
+    train_loader = emulator.load_data("training", emulator.training_set_fraction)
+    valid_loader = emulator.load_data("validation")
+
+    best_loss           = [torch.inf] * emulator.num_zbins
+    epochs_since_update = [0]         * emulator.num_zbins
+
+    emulator._init_training_stats()
+    emulator._init_optimizer()
+    emulator.cov_model.train()
+
+    start_time = time.time()
+
+    for epoch in range(emulator.num_epochs):
+        for z in range(emulator.num_zbins):
+            if epochs_since_update[z] > emulator.early_stopping_epochs:
+                continue
+
+            train_loss = train_cov_one_epoch(emulator, train_loader, z)
+            valid_loss = _calc_avg_cov_loss(emulator, valid_loader, z)
+
+            emulator.train_loss[z].append(train_loss)
+            emulator.valid_loss[z].append(valid_loss)
+            emulator.train_time = time.time() - start_time
+
+            emulator.scheduler[z].step(valid_loss)
+
+            if valid_loss < best_loss[z]:
+                best_loss[z] = valid_loss
+                epochs_since_update[z] = 0
+                emulator._update_checkpoint(z)
+            else:
+                epochs_since_update[z] += 1
+
+            emulator.logger.info(
+                "z={:d}, Epoch {:d}, avg train loss: {:.4e}, avg valid loss: {:.4e} ({:d})".format(
+                    z, epoch, train_loss, valid_loss, epochs_since_update[z]))
+
+            if emulator.early_stopping_epochs != -1 and \
+               epochs_since_update[z] >= emulator.early_stopping_epochs:
+                emulator.logger.info(
+                    f"z={z}: validation loss has not improved for "
+                    f"{epochs_since_update[z]} epochs. Initiating early stopping.")
