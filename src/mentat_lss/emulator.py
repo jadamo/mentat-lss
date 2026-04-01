@@ -171,7 +171,7 @@ class ps_emulator():
             data.to(self.device)
             data.normalize_data(self.ps_fid, self.sqrt_eigvals, self.Q)
 
-            data_loader = torch.utils.data.DataLoader(data, batch_size=self.config_dict["batch_size"], shuffle=True)
+            data_loader = torch.utils.data.DataLoader(data, batch_size=self.batch_size, shuffle=True)
             self._check_training_set(data)
 
             if return_dataloader: return data_loader

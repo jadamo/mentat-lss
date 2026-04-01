@@ -256,7 +256,7 @@ def test_compile_multiple_device_training_results(model_type):
     test_config_dir = os.path.join(current_dir, "test_configs", f"network_pars_{model_type}.yaml")
     test_config = load_config_file(test_config_dir)
 
-    if test_config["model_type"] == "stacked_transformer":
+    if test_config["galaxy_ps_emulator"]["model_type"] == "stacked_transformer":
         bin_idx = torch.Tensor(list(itertools.product(range(3), range(2)))).to(int)
         num_nets = 3*2
     else:
@@ -271,7 +271,7 @@ def test_compile_multiple_device_training_results(model_type):
 
     for n in range(num_nets):
 
-        net_idx = bin_to_net_index(bin_idx[n], test_config["model_type"])
+        net_idx = bin_to_net_index(bin_idx[n], test_config["galaxy_ps_emulator"]["model_type"])
         if n < num_nets // 2:
             test_emulator_1.train_loss[net_idx] = torch.rand(100).tolist()
             test_emulator_1.valid_loss[net_idx] = torch.rand(100).tolist()
@@ -295,9 +295,9 @@ def test_compile_multiple_device_training_results(model_type):
         return all(torch.equal(sd1[k], sd2[k]) for k in sd1)
 
     # check that the combined emulator has the correct training statistics and network parameters
-    if test_config["model_type"] == "stacked_transformer":
+    if test_config["galaxy_ps_emulator"]["model_type"] == "stacked_transformer":
         for n in range(num_nets):
-            net_idx = bin_to_net_index(bin_idx[n], test_config["model_type"])
+            net_idx = bin_to_net_index(bin_idx[n], test_config["galaxy_ps_emulator"]["model_type"])
             if n < num_nets // 2:
                 assert combined_emulator.train_loss[net_idx] == test_emulator_1.train_loss[net_idx]
                 assert combined_emulator.valid_loss[net_idx] == test_emulator_1.valid_loss[net_idx]
@@ -310,7 +310,7 @@ def test_compile_multiple_device_training_results(model_type):
                                         test_emulator_2.galaxy_ps_model.networks[net_idx])
     else:
         for n in range(num_nets):
-            net_idx = bin_to_net_index(bin_idx[n], test_config["model_type"])
+            net_idx = bin_to_net_index(bin_idx[n], test_config["galaxy_ps_emulator"]["model_type"])
             is_cross = net_idx >= test_emulator_1.num_zbins
             z = net_idx - test_emulator_1.num_zbins if is_cross else net_idx
             ref_emulator = test_emulator_1 if n < num_nets // 2 else test_emulator_2
