@@ -58,8 +58,9 @@ def main():
 
     param_names, param_ranges = get_parameter_ranges(cosmo_dict)
 
-    organize_training_set(save_dir, train_frac, valid_frac, test_frac,
-                          len(param_names), len(z_eff), num_spectra, num_ells, len(k), False)
+    organize_training_set(save_dir, train_frac, valid_frac, test_frac, "ps", len(param_names),
+                          num_zbins=len(z_eff), num_spectra=num_spectra, num_ells=num_ells,
+                          k_dim=len(k), remove_old_files=False)
 
 if __name__ == "__main__":
     main()

@@ -241,67 +241,119 @@ def is_in_hypersphere(priors, params):
     return torch.lt(r, 1.0), r
 
 
-def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, test_frac:float, 
-                          param_dim, num_zbins, num_spectra, num_ells, k_dim, remove_old_files=True):
-    """Takes a set of training data and reorganizes them into training, validation, and tests sets
-    
+def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, test_frac:float,
+                          data_type:str, param_dim:int,
+                          num_zbins:int, num_spectra:int=None, num_ells:int=None, k_dim:int=None,
+                          mat_dim:int=None, remove_old_files:bool=True):
+    """Reorganizes raw training data files into training, validation, and test sets.
+
+    Supports both galaxy power spectrum ("ps") and covariance matrix ("cov") data types.
+    Loads all matching files from training_dir, splits them according to the given fractions,
+    and saves the results to disk.
+
     Args:
-        training_dir: Directory contaitning matrices to organize
-        train_frac: Fraction of dataset to partition as the training set
-        valid_frac: Fraction of dataset to partition as the validation set
-        test_frac: Fraction of dataset to partition as the test set
-        param_dim: Dimension of input parameter arrays
-        mat_dim: Dimention of power spectra
-        remove_old_files: If True, deletes old data files after loading data into \
-            memory and before re-organizing. Default True.
+        training_dir (str): directory containing raw data files to organize
+        train_frac (float): fraction of dataset to partition as the training set
+        valid_frac (float): fraction of dataset to partition as the validation set
+        test_frac (float): fraction of dataset to partition as the test set
+        data_type (str): one of ["ps", "cov"]. Determines which files to load and how
+            to save the output.
+        param_dim (int): dimension of input parameter arrays
+        remove_old_files (bool, optional): if True, deletes original data files after
+            loading. Defaults to True.
+        num_zbins (int, optional): number of redshift bins. Required when data_type="ps".
+        num_spectra (int, optional): number of power spectra. Required when data_type="ps".
+        num_ells (int, optional): number of multipole moments. Required when data_type="ps".
+        k_dim (int, optional): number of k-bins. Required when data_type="ps".
+        mat_dim (int, optional): dimension N of the N×N covariance matrix. Required when
+            data_type="cov".
+
+    Raises:
+        KeyError: if data_type is not one of ["ps", "cov"].
+        AssertionError: if train_frac + valid_frac + test_frac > 1.
     """
-    all_filenames = next(os.walk(training_dir), (None, None, []))[2]  # [] if no file
+    if data_type not in ("ps", "cov"):
+        raise KeyError(f"Invalid data_type! Must be one of ['ps', 'cov'], but got {data_type}")
 
-    all_params = np.array([], dtype=np.int64).reshape(0,param_dim)
-    all_galaxy_ps = np.array([], dtype=np.int64).reshape(0, num_spectra, num_zbins, k_dim, num_ells)
+    all_filenames = next(os.walk(training_dir), (None, None, []))[2]
 
-    # load in all the data internally (NOTE: memory intensive!)
-    # if "pk-raw.npz" in all_filenames:
-    #     all_filenames = ["pk-raw.npz"]
+    if data_type == "ps":
+        all_params    = np.array([], dtype=np.int64).reshape(0, param_dim)
+        all_galaxy_ps = np.array([], dtype=np.int64).reshape(0, num_spectra, num_zbins, k_dim, num_ells)
 
-    for file in all_filenames:
-        if "pk-" in file:
-            
-            print("loading " + file + "...")
-            F = np.load(os.path.join(training_dir, file))
-            params = F["params"]
-            galaxy_ps = F["galaxy_ps"]
-            del F
-            all_params = np.vstack([all_params, params])
-            all_galaxy_ps = np.vstack([all_galaxy_ps, galaxy_ps])
-
-    N = all_params.shape[0]
-    N_train = int(N * train_frac)
-    N_valid = int(N * valid_frac)
-    N_test = int(N * test_frac)
-    assert N_train + N_valid + N_test <= N
-
-    valid_start = N_train
-    valid_end = N_train + N_valid
-    test_end = N_train + N_valid + N_test
-    assert test_end - valid_end == N_test
-    assert valid_end - valid_start == N_valid
-
-    if remove_old_files == True:
         for file in all_filenames:
-            if "pk-" in file: os.remove(os.path.join(training_dir,file))
+            if file == "ps_properties.npz": continue
+            if "pk-" in file:
+                print("loading " + file + "...")
+                F = np.load(os.path.join(training_dir, file))
+                all_params    = np.vstack([all_params,    F["params"]])
+                all_galaxy_ps = np.vstack([all_galaxy_ps, F["galaxy_ps"]])
+                del F
 
-    print("splitting dataset into chunks of size [{:0.0f}, {:0.0f}, {:0.0f}]...".format(N_train, N_valid, N_test))
+        N = all_params.shape[0]
+        N_train = int(N * train_frac)
+        N_valid = int(N * valid_frac)
+        N_test  = int(N * test_frac)
+        assert N_train + N_valid + N_test <= N
 
-    np.savez(os.path.join(training_dir,"pk-training.npz"), 
-                params=all_params[0:N_train],
-                galaxy_ps=all_galaxy_ps[0:N_train])
-    np.savez(os.path.join(training_dir,"pk-validation.npz"), 
-                params=all_params[valid_start:valid_end], 
-                galaxy_ps=all_galaxy_ps[valid_start:valid_end])
-    np.savez(os.path.join(training_dir,"pk-testing.npz"), 
-                params=all_params[valid_end:test_end], 
-                galaxy_ps=all_galaxy_ps[valid_end:test_end]) 
+        valid_start = N_train
+        valid_end   = N_train + N_valid
+        test_end    = N_train + N_valid + N_test
+
+        if remove_old_files:
+            for file in all_filenames:
+                if "pk-" in file:
+                    os.remove(os.path.join(training_dir, file))
+
+        print("splitting dataset into chunks of size [{:0.0f}, {:0.0f}, {:0.0f}]...".format(N_train, N_valid, N_test))
+
+        np.savez(os.path.join(training_dir, "pk-training.npz"),
+                 params=all_params[:N_train], galaxy_ps=all_galaxy_ps[:N_train])
+        np.savez(os.path.join(training_dir, "pk-validation.npz"),
+                 params=all_params[valid_start:valid_end], galaxy_ps=all_galaxy_ps[valid_start:valid_end])
+        np.savez(os.path.join(training_dir, "pk-testing.npz"),
+                 params=all_params[valid_end:test_end], galaxy_ps=all_galaxy_ps[valid_end:test_end])
+
+    else:  # data_type == "cov"
+        all_params = np.array([], dtype=np.float64).reshape(0, param_dim)
+        all_C_G    = np.array([], dtype=np.float64).reshape(0, num_zbins, mat_dim, mat_dim)
+        all_C_NG   = np.array([], dtype=np.float64).reshape(0, num_zbins, mat_dim, mat_dim)
+
+        for file in all_filenames:
+            if file == "cov_properties.npz": continue
+            if "cov_" in file:
+                print("loading " + file + "...")
+                data = np.load(os.path.join(training_dir, file), allow_pickle=True)
+                all_params = np.vstack([all_params, data["params"]])
+                all_C_G    = np.vstack([all_C_G,    data["C_G"]])
+                all_C_NG   = np.vstack([all_C_NG,   data["C_NG"]])
+                del data
+
+        N = all_params.shape[0]
+        N_train = int(N * train_frac)
+        N_valid = int(N * valid_frac)
+        N_test  = int(N * test_frac)
+        assert N_train + N_valid + N_test <= N
+
+        valid_start = N_train
+        valid_end   = N_train + N_valid
+        test_end    = N_train + N_valid + N_test
+
+        if remove_old_files:
+            for file in all_filenames:
+                if "cov_" in file and file != "cov_properties.npz":
+                    os.remove(os.path.join(training_dir, file))
+
+        print("splitting dataset into chunks of size [{:0.0f}, {:0.0f}, {:0.0f}]...".format(N_train, N_valid, N_test))
+
+        np.savez(os.path.join(training_dir, "CovA-training.npz"),
+                 params=all_params[:N_train], C_G=all_C_G[:N_train], C_NG=all_C_NG[:N_train])
+        np.savez(os.path.join(training_dir, "CovA-validation.npz"),
+                 params=all_params[valid_start:valid_end],
+                 C_G=all_C_G[valid_start:valid_end], C_NG=all_C_NG[valid_start:valid_end])
+        np.savez(os.path.join(training_dir, "CovA-testing.npz"),
+                 params=all_params[valid_end:test_end],
+                 C_G=all_C_G[valid_end:test_end], C_NG=all_C_NG[valid_end:test_end])
 
 
 def get_full_invcov(cov:torch.Tensor, num_zbins:int):
@@ -454,7 +506,7 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
     return chi2
 
 
-def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
+def calc_avg_ps_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
     """run thru the given data set and returns the average loss value for a given sub-network, or all sub-networks in a list
 
     Args:
@@ -472,12 +524,12 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
     if bin_idx == None and emulator.model_type == "combined_tracer_transformer":
         total_loss = torch.zeros(2 * emulator.num_zbins, requires_grad=False)
         for net_idx in range(2 * emulator.num_zbins):
-            total_loss[net_idx] = calc_avg_loss(emulator, data_loader, loss_function, net_idx)
+            total_loss[net_idx] = calc_avg_ps_loss(emulator, data_loader, loss_function, net_idx)
         return total_loss
     elif bin_idx == None:
         total_loss = torch.zeros(emulator.num_spectra, emulator.num_zbins, requires_grad=False)
         for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
-            total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z])
+            total_loss[ps, z] = calc_avg_ps_loss(emulator, data_loader, loss_function, [ps, z])
         return total_loss
     
     emulator.galaxy_ps_model.eval()
@@ -504,6 +556,30 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
             avg_loss += loss_function(prediction, target, emulator.invcov_blocks, True).item()
 
     return avg_loss / (len(data_loader.dataset))
+
+def calc_avg_cov_loss(emulator, data_loader:torch.utils.data.DataLoader, z_idx:int):
+    """Calculates the average L1 loss for one redshift bin over the given dataset.
+
+    Args:
+        emulator (cov_emulator): emulator object to evaluate
+        data_loader (torch.utils.data.DataLoader): dataset to evaluate on
+        z_idx (int): index of the redshift bin to evaluate
+
+    Returns:
+        avg_loss (float): average L1 loss per sample
+    """
+    from torch.nn import functional as F
+
+    emulator.cov_model.eval()
+    avg_loss = 0.
+    with torch.no_grad():
+        for params, matrices in data_loader:
+            org_params  = emulator.cov_model.organize_parameters(params)
+            norm_params = normalize_cosmo_params(org_params, emulator.input_normalizations)
+            prediction  = emulator.cov_model(norm_params, z_idx=z_idx)
+            target      = matrices[:, z_idx]
+            avg_loss += F.l1_loss(prediction, target, reduction="sum").item()
+    return avg_loss / len(data_loader.dataset)
 
 def calc_chi2_statistics(emulator, data_loader):
     """Calculates the delta chi2 statistics of the emulator predictions on the given dataset, both for each individual sub-network and for the combined emulator output.
@@ -684,68 +760,6 @@ def symmetric_exp(m:torch.Tensor, pos_norm:float, neg_norm:float):
     pos_m[pos_m == 1] = 0
     neg_m[neg_idx] = -10**(-1 * neg_m[neg_idx]) + 1
     return pos_m + neg_m
-
-
-def organize_cov_training_set(training_dir:str, train_frac:float, valid_frac:float, test_frac:float,
-                               params_dim:int, mat_dim:int, remove_old_files:bool=True):
-    """Reorganizes raw covariance matrix data files into training, validation, and test sets.
-
-    Loads all files matching the "CovA-" prefix from training_dir and splits them
-    according to the given fractions, saving results as CovA-training.npz,
-    CovA-validation.npz, and CovA-testing.npz.
-
-    Args:
-        training_dir (str): directory containing raw covariance matrix files to organize
-        train_frac (float): fraction of dataset to partition as the training set
-        valid_frac (float): fraction of dataset to partition as the validation set
-        test_frac (float): fraction of dataset to partition as the test set
-        params_dim (int): dimension of input parameter arrays
-        mat_dim (int): dimension of the square covariance matrices (N for an N×N matrix)
-        remove_old_files (bool, optional): if True, deletes original data files after loading.
-            Defaults to True.
-
-    Raises:
-        AssertionError: if train_frac + valid_frac + test_frac > 1
-    """
-    all_filenames = next(os.walk(training_dir), (None, None, []))[2]
-
-    all_params = np.array([], dtype=np.float64).reshape(0, params_dim)
-    all_C_G    = np.array([], dtype=np.float64).reshape(0, mat_dim, mat_dim)
-    all_C_NG   = np.array([], dtype=np.float64).reshape(0, mat_dim, mat_dim)
-
-    for file in all_filenames:
-        if "CovA-" in file:
-            data = np.load(os.path.join(training_dir, file), allow_pickle=True)
-            all_params = np.vstack([all_params, data["params"]])
-            all_C_G    = np.vstack([all_C_G,    data["C_G"]])
-            all_C_NG   = np.vstack([all_C_NG,   data["C_NG"]])
-            del data
-
-    N       = all_params.shape[0]
-    N_train = int(N * train_frac)
-    N_valid = int(N * valid_frac)
-    N_test  = int(N * test_frac)
-    assert N_train + N_valid + N_test <= N
-
-    valid_start = N_train
-    valid_end   = N_train + N_valid
-    test_end    = N_train + N_valid + N_test
-
-    if remove_old_files:
-        for file in all_filenames:
-            if "CovA-" in file:
-                os.remove(os.path.join(training_dir, file))
-
-    print("splitting dataset into chunks of size [{:0.0f}, {:0.0f}, {:0.0f}]...".format(N_train, N_valid, N_test))
-
-    np.savez(os.path.join(training_dir, "CovA-training.npz"),
-             params=all_params[:N_train], C_G=all_C_G[:N_train], C_NG=all_C_NG[:N_train])
-    np.savez(os.path.join(training_dir, "CovA-validation.npz"),
-             params=all_params[valid_start:valid_end],
-             C_G=all_C_G[valid_start:valid_end], C_NG=all_C_NG[valid_start:valid_end])
-    np.savez(os.path.join(training_dir, "CovA-testing.npz"),
-             params=all_params[valid_end:test_end],
-             C_G=all_C_G[valid_end:test_end], C_NG=all_C_NG[valid_end:test_end])
 
 
 def un_normalize_power_spectrum(ps_raw:torch.Tensor, ps_fid:torch.Tensor, sqrt_eigvals:torch.Tensor, Q:torch.Tensor, Q_inv:torch.Tensor):

@@ -47,6 +47,11 @@ class ps_emulator():
         # load dictionary entries into their own class variables
         for key in self.config_dict:
             setattr(self, key, self.config_dict[key])
+        # flatten architecture and training sub-dicts into direct attributes
+        for key, val in self.config_dict.get("galaxy_ps_emulator", {}).items():
+            setattr(self, key, val)
+        for key, val in self.config_dict.get("galaxy_ps_training_params", {}).items():
+            setattr(self, key, val)
 
         self._init_device(device, mode)
         self._init_model()
@@ -467,10 +472,10 @@ class ps_emulator():
                     else:
                         net = self.galaxy_ps_model.cross_networks[net_idx - self.num_zbins]
                     self.optimizer[net_idx] = torch.optim.Adam(net.parameters(),
-                                                               lr=self.galaxy_ps_learning_rate)
+                                                               lr=self.learning_rate)
                 else:
                     self.optimizer[net_idx] = torch.optim.Adam(self.galaxy_ps_model.networks[net_idx].parameters(),
-                                                               lr=self.galaxy_ps_learning_rate)
+                                                               lr=self.learning_rate)
             else:
                 raise KeyError("Error! Invalid optimizer type specified!")
 
@@ -704,8 +709,17 @@ class cov_emulator():
 
         self.logger = logging.getLogger("cov_emulator")
 
+        # infer num_zbins and num_tracers from cov_properties.npz if not in config
+        if np.any([key not in self.config_dict for key in ["num_zbins", "num_tracers"]]):
+            self._load_cov_properties(os.path.join(self.config_dict["input_dir"], self.config_dict["training_dir"]))
+
         for key in self.config_dict:
             setattr(self, key, self.config_dict[key])
+        # flatten architecture and training sub-dicts into direct attributes
+        for key, val in self.config_dict.get("covariance_emulator", {}).items():
+            setattr(self, key, val)
+        for key, val in self.config_dict.get("covariance_training_params", {}).items():
+            setattr(self, key, val)
 
         self._init_device(device, mode)
         self._init_model()
@@ -727,6 +741,34 @@ class cov_emulator():
             raise KeyError(f"Invalid mode specified! Must be one of ['train', 'eval'] but was {mode}.")
 
 
+    def _load_cov_properties(self, path:str):
+        """Loads survey geometry (z-bins and tracers) from cov_properties.npz.
+
+        Sets num_zbins and num_tracers in config_dict so they are available to the
+        model constructor and the setattr loop. Analogous to ps_emulator._load_ps_properties.
+
+        Args:
+            path (str): directory containing cov_properties.npz
+
+        Raises:
+            IOError: if no cov_properties.npz file is found at path
+        """
+        props_path = os.path.join(path, "cov_properties.npz")
+        if not os.path.exists(props_path):
+            raise IOError(f"No cov_properties.npz file found at {props_path}")
+
+        cov_props = np.load(props_path)
+        self.z_eff = cov_props["z_eff"]
+        self.ndens = cov_props["ndens"]
+
+        self.config_dict["num_zbins"]   = len(self.z_eff)
+        self.config_dict["num_tracers"] = len(self.ndens)
+
+        self.logger.info(
+            f"Covariance emulator using {self.config_dict['num_zbins']} z-bins and "
+            f"{self.config_dict['num_tracers']} tracers (based on cov_properties.npz)")
+
+
     def load_trained_model(self, path:str):
         """Loads a pre-trained network from file.
 
@@ -738,6 +780,12 @@ class cov_emulator():
                 and input_normalizations.pt
         """
         self.logger.info(f"loading covariance emulator from {path}")
+
+        if not hasattr(self, "z_eff") or not hasattr(self, "ndens"):
+            cov_props = np.load(os.path.join(path, "cov_properties.npz"))
+            self.z_eff = cov_props["z_eff"]
+            self.ndens = cov_props["ndens"]
+
         self.cov_model.eval()
         self.cov_model.load_state_dict(
             torch.load(os.path.join(path, "network_cov.params"),
@@ -952,6 +1000,13 @@ class cov_emulator():
         # configuration
         with open(os.path.join(save_dir, "config.yaml"), "w") as outfile:
             yaml.dump(dict(self.config_dict), outfile, sort_keys=False, default_flow_style=False)
+
+        # survey geometry
+        if hasattr(self, "z_eff") and hasattr(self, "ndens"):
+            np.savez(os.path.join(save_dir, "cov_properties.npz"),
+                     z_eff=self.z_eff, ndens=self.ndens)
+        else:
+            self.logger.warning("cov_properties not initialized — cov_properties.npz not saved.")
 
         # matrix normalization values
         torch.save([self.norm_pos, self.norm_neg],

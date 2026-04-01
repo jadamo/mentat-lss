@@ -9,8 +9,6 @@ training_dir: ../../xdisk/training_set_eft_2t_2z_hypersphere/
 # This file contains all of the parameter ranges
 cosmo_dir : ./configs/cosmo_pars/cosmo_pars_2t_2z.yaml
 sampling_type : hypersphere
-
-model_type : stacked_transformer
 loss_type : hyperbolic_chi2
 
 num_cosmo_params    : 5
@@ -18,6 +16,8 @@ num_nuisance_params : 3 # <- per tracer
 
 # specifications are for each network - will be repeated for each sample / redshift bin
 galaxy_ps_emulator:
+  model_type : stacked_transformer
+
   # mlp parameters
   spectrum_embed_dim  : 8
   num_mlp_blocks      : 2
@@ -31,20 +31,20 @@ galaxy_ps_emulator:
   split_size             : 20
   num_heads              : 1
 
-# Training parameters
-num_epochs: 500
-galaxy_ps_learning_rate: 0.005
-nw_ps_learning_rate : 0.0005
-batch_size: 1000
-training_set_fraction : 1.0
-early_stopping_epochs: 25
-weight_initialization: He
-optimizer_type : Adam
+galaxy_ps_training_params:
+  num_epochs: 500
+  learning_rate: 0.001
+  batch_size: 1000
+  training_set_fraction : 1.0
+  early_stopping_epochs: 25
+  weight_initialization: He
+  optimizer_type : Adam
 
-# whether to re-calculate the training-set loss at the end of each epoch
-# Setting to true gives more accurate loss stats, but is slower
-# Validation set loss is not changed by this option
-recalculate_train_loss : False
+  # whether to re-calculate the training-set loss at the end of each epoch
+  # Setting to true gives more accurate loss stats, but is slower
+  # Validation set loss is not changed by this option
+  recalculate_train_loss : False
+  
 # whether to attempt training on GPU
 # NOTE: Small networks will possibly train faster on CPU!
 use_gpu : True

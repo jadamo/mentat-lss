@@ -43,50 +43,52 @@ class cov_network(nn.Module):
         """
         super().__init__()
 
-        self.architecture = config_dict["architecture"]
+        arch = config_dict["covariance_emulator"]
+
+        self.model_type = arch["model_type"]
         self.input_dim  = config_dict["input_dim"]
-        self.output_dim = config_dict["output_dim"]
+        self.output_dim = arch["output_dim"]
 
         # compressed matrix shape: (output_dim+1, output_dim/2)
-        self.N      = torch.Tensor([config_dict["output_dim"] + 1, config_dict["output_dim"] / 2]).int()
+        self.N      = torch.Tensor([arch["output_dim"] + 1, arch["output_dim"] / 2]).int()
         self.N_flat = (self.N[0] * self.N[1]).item()
 
         # ---------------------------------------------------------------
         # MLP architecture
-        if self.architecture == "MLP":
-            self.h1 = nn.Linear(self.input_dim, config_dict["mlp_dims"][0])
+        if self.model_type == "MLP":
+            self.h1 = nn.Linear(self.input_dim, arch["mlp_dims"][0])
             self.mlp_blocks = nn.Sequential()
-            for i in range(config_dict["num_mlp_blocks"]):
+            for i in range(arch["num_mlp_blocks"]):
                 self.mlp_blocks.add_module(
                     "ResNet" + str(i + 1),
-                    block_cov_resnet(config_dict["mlp_dims"][i], config_dict["mlp_dims"][i + 1]))
-            self.out = nn.Linear(config_dict["mlp_dims"][-1], self.N_flat)
+                    block_cov_resnet(arch["mlp_dims"][i], arch["mlp_dims"][i + 1]))
+            self.out = nn.Linear(arch["mlp_dims"][-1], self.N_flat)
 
         # ---------------------------------------------------------------
         # MLP + Transformer architecture
-        elif self.architecture == "MLP-T":
-            self.h1 = nn.Linear(self.input_dim, config_dict["mlp_dims"][0])
+        elif self.model_type == "MLP-T":
+            self.h1 = nn.Linear(self.input_dim, arch["mlp_dims"][0])
             self.mlp_blocks = nn.Sequential()
-            for i in range(config_dict["num_mlp_blocks"]):
+            for i in range(arch["num_mlp_blocks"]):
                 self.mlp_blocks.add_module(
                     "ResNet" + str(i + 1),
-                    block_cov_resnet(config_dict["mlp_dims"][i], config_dict["mlp_dims"][i + 1]))
-            self.out = nn.Linear(config_dict["mlp_dims"][-1], self.N_flat)
+                    block_cov_resnet(arch["mlp_dims"][i], arch["mlp_dims"][i + 1]))
+            self.out = nn.Linear(arch["mlp_dims"][-1], self.N_flat)
 
-            self.patch_size  = torch.Tensor(config_dict["patch_size"]).int().tolist()
+            self.patch_size  = torch.Tensor(arch["patch_size"]).int().tolist()
             self.n_patches   = [(self.N[0].item() // self.patch_size[0]),
                                  (self.N[1].item() // self.patch_size[1])]
             sequence_len     = int(self.patch_size[0] * self.patch_size[1])
             num_sequences    = self.n_patches[0] * self.n_patches[1]
-            self.embedding   = config_dict["embedding"]
+            self.embedding   = arch["embedding"]
 
             self.linear_map = nn.Linear(sequence_len, sequence_len)
             self.transform_blocks = nn.Sequential()
-            for i in range(config_dict["num_transformer_blocks"]):
+            for i in range(arch["num_transformer_blocks"]):
                 self.transform_blocks.add_module(
                     "transform" + str(i + 1),
-                    nn.TransformerEncoderLayer(sequence_len, config_dict["num_heads"],
-                                               4 * sequence_len, config_dict["dropout_prob"],
+                    nn.TransformerEncoderLayer(sequence_len, arch["num_heads"],
+                                               4 * sequence_len, arch["dropout_prob"],
                                                "gelu", batch_first=True))
 
             pos_embed = self._get_positional_embedding(num_sequences, sequence_len)
@@ -94,7 +96,7 @@ class cov_network(nn.Module):
             self.register_buffer("pos_embed", pos_embed)
 
         else:
-            raise KeyError(f"Invalid architecture! Must be one of ['MLP', 'MLP-T'], but got {self.architecture}")
+            raise KeyError(f"Invalid model_type! Must be one of ['MLP', 'MLP-T'], but got {self.model_type}")
 
     def load_pretrained(self, path:str, freeze:bool=True):
         """Loads pre-trained layer weights from file into the current model.
@@ -172,7 +174,7 @@ class cov_network(nn.Module):
             X (torch.Tensor): batch of lower-triangular matrices,
                 shape (batch_size, output_dim, output_dim)
         """
-        if self.architecture == "MLP":
+        if self.model_type == "MLP":
             X = F.leaky_relu(self.h1(X))
             for blk in self.mlp_blocks:
                 X = F.leaky_relu(blk(X))
@@ -181,7 +183,7 @@ class cov_network(nn.Module):
             X = rearange_to_full(X, lower_triangular=True)
             return X
 
-        elif self.architecture == "MLP-T":
+        elif self.model_type == "MLP-T":
             X = F.leaky_relu(self.h1(X))
             for blk in self.mlp_blocks:
                 X = F.leaky_relu(blk(X))

@@ -114,7 +114,6 @@ def train_on_single_device(emulator:ps_emulator, trial=None):
                 emulator.train_loss[net_idx].append(training_loss)
             emulator.valid_loss[net_idx].append(calc_avg_ps_loss(emulator, valid_loader, emulator.loss_function, bin_idx))
 
-
             emulator.scheduler[net_idx].step(emulator.valid_loss[net_idx][-1])
             emulator.train_time = time.time() - start_time
 
@@ -194,7 +193,6 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
                 emulator.train_loss[net_idx].append(training_loss)
             emulator.valid_loss[net_idx].append(calc_avg_ps_loss(emulator, valid_loader, emulator.loss_function, bin_idx))
 
-
             emulator.scheduler[net_idx].step(emulator.valid_loss[net_idx][-1])
             emulator.train_time = time.time() - start_time
 
@@ -258,31 +256,6 @@ def train_cov_one_epoch(emulator:cov_emulator, train_loader:torch.utils.data.Dat
     return (total_loss / len(train_loader.dataset)).item()
 
 
-def _calc_avg_cov_loss(emulator:cov_emulator, data_loader:torch.utils.data.DataLoader, z_idx:int):
-    """Calculates the average L1 loss for one redshift bin over the given dataset.
-
-    Args:
-        emulator (cov_emulator): emulator object to evaluate
-        data_loader (torch.utils.data.DataLoader): dataset to evaluate on
-        z_idx (int): index of the redshift bin to evaluate
-
-    Returns:
-        avg_loss (float): average L1 loss per sample
-    """
-    from torch.nn import functional as F
-
-    emulator.cov_model.eval()
-    avg_loss = 0.
-    with torch.no_grad():
-        for params, matrices in data_loader:
-            org_params  = emulator.cov_model.organize_parameters(params)
-            norm_params = normalize_cosmo_params(org_params, emulator.input_normalizations)
-            prediction  = emulator.cov_model(norm_params, z_idx=z_idx)
-            target      = matrices[:, z_idx]
-            avg_loss += F.l1_loss(prediction, target, reduction="sum").item()
-    return avg_loss / len(data_loader.dataset)
-
-
 def train_cov_on_single_device(emulator:cov_emulator):
     """Trains the covariance emulator on a single device (CPU or GPU).
 
@@ -311,7 +284,7 @@ def train_cov_on_single_device(emulator:cov_emulator):
                 continue
 
             train_loss = train_cov_one_epoch(emulator, train_loader, z)
-            valid_loss = _calc_avg_cov_loss(emulator, valid_loader, z)
+            valid_loss = calc_avg_cov_loss(emulator, valid_loader, z)
 
             emulator.train_loss[z].append(train_loss)
             emulator.valid_loss[z].append(valid_loss)

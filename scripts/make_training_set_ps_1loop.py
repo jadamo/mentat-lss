@@ -200,8 +200,8 @@ def main():
     comm.Barrier()
     if rank == 0:
         print("\nRe-organizing data to training / validation / test sets...")
-        organize_training_set(save_dir, train_frac, valid_frac, test_frac,
-                              rank_samples.shape[1], len(z_eff), num_spectra, len(ells), len(k), True)
+        organize_training_set(save_dir, train_frac, valid_frac, test_frac, "ps", rank_samples.shape[1],
+                              num_zbins=len(z_eff), num_spectra=num_spectra, num_ells=len(ells), k_dim=len(k))
 
 if __name__ == "__main__":
     main()

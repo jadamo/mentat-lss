@@ -1,14 +1,14 @@
 # directory that all other paths are relative to
-input_dir: "/path/to/your/project/"
+input_dir: ""
 # Where to save the trained network
-save_dir: ./emulators/cov_emulator_example/
-# Where your training set lives (CovA-training.npz, CovA-validation.npz, CovA-testing.npz)
-training_dir: /path/to/training_data/
-# Location of config file with cosmology + bias parameters (same format as ps_emulator)
-# Parameter bounds are read from priors defined in this file
-cosmo_dir: ./configs/cosmo_pars/cosmo_pars_example.yaml
+save_dir: ./tests/test_networks/cov_mlp_t/
+# Where your training set lives
+training_dir: ./tests/test_data/
+# Location of config file with cosmology + bias parameters
+# This file contains all of the parameter ranges
+cosmo_dir : ./tests/test_configs/cosmo_pars_2t_2z.yaml
+sampling_type : hypersphere
 
-# Dataset dimensions — must be consistent with cosmo_dir and the training data
 num_cosmo_params:    5   # number of cosmological parameters with priors in cosmo_dir
 num_nuisance_params: 3   # number of nuisance (bias) parameters per tracer
 
@@ -36,8 +36,8 @@ covariance_training_params:
   train_gaussian_only: False
 
   # Training parameters
-  num_epochs: 300
-  batch_size: 600
+  num_epochs: 10
+  batch_size: 80
   learning_rate: 1.4e-3
   early_stopping_epochs: 25
   training_set_fraction: 1.0
