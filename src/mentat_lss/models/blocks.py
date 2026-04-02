@@ -164,60 +164,49 @@ class multi_headed_attention(nn.Module):
 class block_addnorm(nn.Module):
     def __init__(self, shape, dropout_prob=0.):
         super().__init__()
-        self.dropoiut = nn.Dropout(dropout_prob)
+        self.dropout = nn.Dropout(dropout_prob)
         self.layerNorm = nn.LayerNorm(shape)
     def forward(self, X, Y):
-        return self.layerNorm(self.dropoiut(Y) + X)
+        return self.layerNorm(self.dropout(Y) + X)
     
 class block_transformer_encoder(nn.Module):
     """Custom transformer encoder class"""
 
-    def __init__(self, embedding_dim:int, split_dim:int, dropout_prob=0., num_heads:int=1):
-        """Initializes the transformer encoder block
+    def __init__(self, token_dim:int, dropout_prob=0., num_heads:int=1):
+        """Initializes the transformer encoder block. Expects pre-shaped input of
+        [batch, seq_len, token_dim] and returns the same shape.
 
         Args:
-            embedding_dim (int): size of the embedded input to the block. Should be divisible by split_dim
-            split_dim (int): number of tokens the embedding is split into for attention. Should be a factor of embedding_dim
+            token_dim (int): dimension of each token. Must be divisible by num_heads.
             dropout_prob (float, optional): probability a given weight is dropped during training. Defaults to 0.
-            num_heads (int, optional): number of attention heads. Must divide embedding_dim // split_dim. Defaults to 1.
+            num_heads (int, optional): number of attention heads. Must divide token_dim. Defaults to 1.
 
         Raises:
-            ValueError: If hidden dim or split_dim are invalid. Both values must be > 0 and embedding_dim divisible by split_dim
+            ValueError: If token_dim is not divisible by num_heads.
         """
         super().__init__()
-        self.embedding_dim = embedding_dim
-        self.split_dim = split_dim
-        self._check_inputs(embedding_dim, split_dim, num_heads)
+        if token_dim % num_heads != 0:
+            raise ValueError(f"token_dim={token_dim} must be divisible by num_heads={num_heads}")
 
-        token_dim = embedding_dim // split_dim
         self.attention = nn.MultiheadAttention(token_dim, num_heads, dropout_prob, batch_first=True)
+        self.add_norm1 = block_addnorm(token_dim, dropout_prob)
 
-        #feed-forward network
-        self.h1 = linear_with_channels(token_dim, token_dim, split_dim)
+        self.h1 = nn.Linear(token_dim, token_dim)
         self.activation = activation_function(token_dim)
-
-    def _check_inputs(self, embedding_dim, split_dim, num_heads):
-        """Checks the input block parameters are valid"""
-        if embedding_dim <= 0 or split_dim <= 0:
-            raise ValueError(f"All block structure parameters must be >= 0, but got embedding_dim={embedding_dim} and split_dim={split_dim}")
-        if embedding_dim % split_dim != 0:
-            raise ValueError(f"Embedding dim must be divisible by split_dim, but got a remainder of {embedding_dim % split_dim}")
-        if (embedding_dim // split_dim) % num_heads != 0:
-            raise ValueError(f"Token dim (embedding_dim // split_dim = {embedding_dim // split_dim}) must be divisible by num_heads={num_heads}")
+        self.add_norm2 = block_addnorm(token_dim, dropout_prob)
 
     def forward(self, X:torch.Tensor):
         """Passes through the transformer block
 
         Args:
-            X (torch.Tensor): Input to the block. Should have shape (batch_size, embedding_dim)
+            X (torch.Tensor): Input to the block. Should have shape (batch_size, seq_len, token_dim)
 
         Returns:
-            X (torch.Tensor): Output of the block. Has shape (batch_size, embedding_dim)
+            X (torch.Tensor): Output of the block. Has shape (batch_size, seq_len, token_dim)
         """
-        X = X.reshape(-1, self.split_dim, self.embedding_dim // self.split_dim)  # [b, split_dim, token_dim]
-        X = X + self.attention(X, X, X)[0]                                        # attend across split_dim tokens
-        Y = self.activation(self.h1(X))                                            # channel-wise feed-forward
-        return (X + Y).reshape(-1, self.embedding_dim)
+        X = self.add_norm1(X, self.attention(X, X, X)[0])
+        Y = self.activation(self.h1(X))
+        return self.add_norm2(X, Y)
 
 class activation_function(nn.Module):
     """Custom nonlinear activation function"""

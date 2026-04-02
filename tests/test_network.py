@@ -46,24 +46,22 @@ def test_block_resnet(input_dim, output_dim, num_layers, hidden_dim_factor, expe
         assert not torch.all(torch.isnan(test_output))
         assert not torch.all(torch.isinf(test_output))
 
-@pytest.mark.parametrize("embedding_dim, split_dim, expected", [
-    (10, 10, None),
-    (10, 5, None), 
-    (2, 10, ValueError),
-    (0, 10, ValueError),
-    (10, 4, ValueError),
-    (10, 0, ValueError),
+@pytest.mark.parametrize("token_dim, seq_len, num_heads, expected", [
+    (16, 25, 1, None),
+    (16, 25, 4, None),
+    (16, 25, 3, ValueError),   # 16 not divisible by 3
+    (0,  25, 1, ValueError),   # token_dim=0 → MultiheadAttention error
 ])
-def test_transformer_block(embedding_dim, split_dim, expected):
+def test_transformer_block(token_dim, seq_len, num_heads, expected):
     if isinstance(expected, type) and issubclass(expected, Exception):
         with pytest.raises(expected):
-            transformer_block = block_transformer_encoder(embedding_dim, split_dim, 0.1)
+            block_transformer_encoder(token_dim, 0.1, num_heads)
     else:
-        transformer_block = block_transformer_encoder(embedding_dim, split_dim, 0.1)
-        test_input = torch.rand(100, embedding_dim)
+        transformer_block = block_transformer_encoder(token_dim, 0.1, num_heads)
+        test_input = torch.rand(10, seq_len, token_dim)
         test_output = transformer_block(test_input)
 
-        assert test_output.shape == (100, embedding_dim)
+        assert test_output.shape == (10, seq_len, token_dim)
         assert not torch.all(torch.isnan(test_output))
         assert not torch.all(torch.isinf(test_output))
 

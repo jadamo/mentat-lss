@@ -28,19 +28,16 @@ def define_model(trial, cache_dir, default_config_file, device=None):
     hidden_dim_factor = trial.suggest_float("hidden_dim_factor", 1.0, 2.0)
     batch_size = trial.suggest_int("batch_size", 100, 1000)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2)
-    split_dim = trial.suggest_int("split_dim", 4, 10)
-    # num_heads must divide split_size; fix split_size to multiples of 4 (LCM of 1,2,4)
-    # so any sampled num_heads always satisfies the constraint with no rounding needed.
-    num_heads = trial.suggest_categorical("num_heads", [1, 2, 4])
-    split_size = trial.suggest_int("split_size", 12, 40, step=4)
+    # token_proj_dim is a multiple of 8, so num_heads in [1,2,4,8] always divides it.
+    token_proj_dim = trial.suggest_int("token_proj_dim", 8, 64, step=8)
+    num_heads = trial.suggest_categorical("num_heads", [1, 2, 4, 8])
     spectrum_embed_dim = trial.suggest_int("spectrum_embed_dim", 2, 10)
 
     trial_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = num_mlp_blocks
     trial_config_file["galaxy_ps_emulator"]["num_block_layers"] = num_block_layers
     trial_config_file["galaxy_ps_emulator"]["hidden_dim_factor"] = hidden_dim_factor
     trial_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = num_transformer_blocks
-    trial_config_file["galaxy_ps_emulator"]["split_dim"] = split_dim
-    trial_config_file["galaxy_ps_emulator"]["split_size"] = split_size
+    trial_config_file["galaxy_ps_emulator"]["token_proj_dim"] = token_proj_dim
     trial_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = spectrum_embed_dim
     trial_config_file["galaxy_ps_emulator"]["num_heads"] = num_heads
     trial_config_file["batch_size"] = batch_size
@@ -65,8 +62,7 @@ def save_best_params(save_loc, default_config_file, best_params):
     best_config_file["galaxy_ps_emulator"]["num_block_layers"] = best_params["num_block_layers"]
     best_config_file["galaxy_ps_emulator"]["hidden_dim_factor"] = best_params["hidden_dim_factor"]
     best_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = best_params["num_transformer_blocks"]
-    best_config_file["galaxy_ps_emulator"]["split_dim"] = best_params["split_dim"]
-    best_config_file["galaxy_ps_emulator"]["split_size"] = best_params["split_size"]
+    best_config_file["galaxy_ps_emulator"]["token_proj_dim"] = best_params["token_proj_dim"]
     best_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = best_params["spectrum_embed_dim"]
     best_config_file["galaxy_ps_emulator"]["num_heads"] = best_params["num_heads"]
     best_config_file["batch_size"] = best_params["batch_size"]

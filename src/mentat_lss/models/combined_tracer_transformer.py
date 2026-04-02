@@ -46,22 +46,17 @@ class single_zbin_transformer(nn.Module):
                                         "layer",
                                         config_dict["galaxy_ps_emulator"]["use_skip_connection"]))
 
-        # expand mlp section output
-        split_dim = config_dict["galaxy_ps_emulator"]["split_dim"]
-        split_size = config_dict["galaxy_ps_emulator"]["split_size"]
-        embedding_dim = split_size*split_dim
-        self.embedding_layer = nn.Linear(self.output_dim, embedding_dim)
+        # k-bin tokenization: project each k-bin from num_ells → token_proj_dim, add positional encoding
+        token_proj_dim = config_dict["galaxy_ps_emulator"]["token_proj_dim"]
+        self.token_proj_layer = nn.Linear(self.num_ells, token_proj_dim)
+        self.pos_encoding = nn.Parameter(torch.zeros(self.num_kbins, token_proj_dim))
+        self.token_unproj_layer = nn.Linear(token_proj_dim, self.num_ells)
 
-        # do one transformer block per z-bin for now
         num_heads = config_dict["galaxy_ps_emulator"].get("num_heads", 1)
         self.transformer_blocks = nn.Sequential()
         for i in range(config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]):
             self.transformer_blocks.add_module("Transformer"+str(i+1),
-                    blocks.block_transformer_encoder(embedding_dim, split_dim, 0.1, num_heads))
-            self.transformer_blocks.add_module("Activation"+str(i+1),
-                    blocks.activation_function(embedding_dim))
-
-        self.output_layer = nn.Linear(embedding_dim, self.output_dim)
+                    blocks.block_transformer_encoder(token_proj_dim, 0.1, num_heads))
 
     def forward(self, input_params:torch.Tensor, spectrum_indices:torch.Tensor=None):
         """Passes an input tensor through the network"""
@@ -71,11 +66,11 @@ class single_zbin_transformer(nn.Module):
             X = torch.cat([X, self.spectrum_embedding(spectrum_indices)], dim=-1)
         X = self.input_layer(X)
         X = self.mlp_blocks(X)
-        X = self.embedding_layer(X)
+        X = X.reshape(-1, self.num_kbins, self.num_ells)
+        X = self.token_proj_layer(X) + self.pos_encoding
         X = self.transformer_blocks(X)
-        X = self.output_layer(X)
-
-        return X
+        X = self.token_unproj_layer(X)
+        return X.reshape(-1, self.output_dim)
 
 class combined_tracer_transformer(nn.Module):
     """Class defining a stack of single_zbin_transformer objects, one for each redshift bin of the power spectrum output.
