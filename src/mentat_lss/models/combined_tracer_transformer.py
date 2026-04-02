@@ -26,6 +26,7 @@ class single_zbin_transformer(nn.Module):
         num_tracers = config_dict["num_tracers"]
         num_spectra_this_net = num_tracers if not is_cross_spectra else math.comb(num_tracers, 2)
         spectrum_embed_dim = config_dict["galaxy_ps_emulator"].get("spectrum_embed_dim", 8)
+        self.num_transformer_blocks = config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]
 
         # Learned spectrum-type embedding, concatenated to the physical parameters.
         self.spectrum_embedding = nn.Embedding(num_spectra_this_net, spectrum_embed_dim)
@@ -46,17 +47,18 @@ class single_zbin_transformer(nn.Module):
                                         "layer",
                                         config_dict["galaxy_ps_emulator"]["use_skip_connection"]))
 
-        # k-bin tokenization: project each k-bin from num_ells → token_proj_dim, add positional encoding
-        token_proj_dim = config_dict["galaxy_ps_emulator"]["token_proj_dim"]
-        self.token_proj_layer = nn.Linear(self.num_ells, token_proj_dim)
-        self.pos_encoding = nn.Parameter(torch.zeros(self.num_kbins, token_proj_dim))
-        self.token_unproj_layer = nn.Linear(token_proj_dim, self.num_ells)
+        if self.num_transformer_blocks > 0:
+            # k-bin tokenization: project each k-bin from num_ells → token_proj_dim, add positional encoding
+            token_proj_dim = config_dict["galaxy_ps_emulator"]["token_proj_dim"]
+            self.token_proj_layer = nn.Linear(self.num_ells, token_proj_dim)
+            self.pos_encoding = nn.Parameter(torch.zeros(self.num_kbins, token_proj_dim))
+            self.token_unproj_layer = nn.Linear(token_proj_dim, self.num_ells)
 
-        num_heads = config_dict["galaxy_ps_emulator"].get("num_heads", 1)
-        self.transformer_blocks = nn.Sequential()
-        for i in range(config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]):
-            self.transformer_blocks.add_module("Transformer"+str(i+1),
-                    blocks.block_transformer_encoder(token_proj_dim, 0.1, num_heads))
+            num_heads = config_dict["galaxy_ps_emulator"].get("num_heads", 1)
+            self.transformer_blocks = nn.Sequential()
+            for i in range(config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]):
+                self.transformer_blocks.add_module("Transformer"+str(i+1),
+                        blocks.block_transformer_encoder(token_proj_dim, 0.1, num_heads))
 
     def forward(self, input_params:torch.Tensor, spectrum_indices:torch.Tensor=None):
         """Passes an input tensor through the network"""
@@ -66,10 +68,11 @@ class single_zbin_transformer(nn.Module):
             X = torch.cat([X, self.spectrum_embedding(spectrum_indices)], dim=-1)
         X = self.input_layer(X)
         X = self.mlp_blocks(X)
-        X = X.reshape(-1, self.num_kbins, self.num_ells)
-        X = self.token_proj_layer(X) + self.pos_encoding
-        X = self.transformer_blocks(X)
-        X = self.token_unproj_layer(X)
+        if self.num_transformer_blocks > 0:
+            X = X.reshape(-1, self.num_kbins, self.num_ells)
+            X = self.token_proj_layer(X) + self.pos_encoding
+            X = self.transformer_blocks(X)
+            X = self.token_unproj_layer(X)
         return X.reshape(-1, self.output_dim)
 
 class combined_tracer_transformer(nn.Module):
