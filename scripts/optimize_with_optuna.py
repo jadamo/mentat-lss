@@ -7,7 +7,7 @@ import argparse
 import torch 
 
 import mentat_lss.training_loops as training_loops
-from mentat_lss.utils import load_config_file
+from mentat_lss.utils import load_config_file, calc_chi2_statistics
 from mentat_lss.emulator import ps_emulator
 
 def create_cache(cache_dir):
@@ -18,7 +18,7 @@ def clean_cache(cache_dir):
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir)
 
-def define_model(trial, cache_dir, default_config_file, device=None):
+def define_model(trial, cache_dir, default_config_file, training_set_fraction, device=None):
 
     trial_config_file = default_config_file.copy()
 
@@ -26,7 +26,7 @@ def define_model(trial, cache_dir, default_config_file, device=None):
     num_transformer_blocks = trial.suggest_int("num_transformer_blocks", 0, 1)
     num_block_layers = trial.suggest_int("num_block_layers", 2, 6)
     hidden_dim_factor = trial.suggest_float("hidden_dim_factor", 1.0, 2.0)
-    batch_size = trial.suggest_int("batch_size", 100, 1000)
+    batch_size = trial.suggest_int("batch_size", 100, 1000, step=50)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2)
     # token_proj_dim is a multiple of 8, so num_heads in [1,2,4,8] always divides it.
     token_proj_dim = trial.suggest_int("token_proj_dim", 8, 64, step=8)
@@ -43,8 +43,8 @@ def define_model(trial, cache_dir, default_config_file, device=None):
     trial_config_file["batch_size"] = batch_size
     trial_config_file["galaxy_ps_learning_rate"] = learning_rate
     # to save time, only train with 10% of the full data and for only 150 epochs
-    trial_config_file["training_set_fraction"] = 0.1
-    trial_config_file["num_epochs"] = 150
+    trial_config_file["training_set_fraction"] = training_set_fraction
+    trial_config_file["num_epochs"] = 300
 
     # Use an absolute path for save_dir so os.path.join(input_dir, save_dir) resolves
     # to this location regardless of what input_dir is set to.
@@ -75,14 +75,15 @@ def save_best_params(save_loc, default_config_file, best_params):
     with open(file_path, 'w') as outfile:
         yaml.dump(dict(best_config_file), outfile, sort_keys=False, default_flow_style=False)
 
-def objective(trial, cache_dir, default_config_file, device=None):
-    emulator = define_model(trial, cache_dir, default_config_file, device)
+def objective(trial, cache_dir, default_config_file, training_set_fraction, device=None):
+    emulator = define_model(trial, cache_dir, default_config_file, training_set_fraction, device)
 
-    training_loops.train_on_single_device(emulator)
+    training_loops.train_on_single_device(emulator, trial)
 
-    # We're using the average of the best losses for each sub-network
-    best_losses = [min(losses) for losses in emulator.valid_loss if len(losses) > 0]
-    result = sum(best_losses) / len(best_losses)
+    # Use the median delta chi2 from the full emulator validation set as the objective
+    valid_loader = emulator.load_data("validation")
+    chi2_stats = calc_chi2_statistics(emulator, valid_loader, calc_partial=False)
+    result = torch.median(chi2_stats).item()
 
     # clean up trial save directory to avoid filling disk
     trial_save_dir = os.path.join(emulator.input_dir, emulator.save_dir)
@@ -91,7 +92,7 @@ def objective(trial, cache_dir, default_config_file, device=None):
 
     return result
 
-def run_worker(gpu_id, cache_dir, default_config_file, n_trials, db_path):
+def run_worker(gpu_id, cache_dir, default_config_file, n_trials, db_path, training_set_fraction):
 
     device = torch.device(f"cuda:{gpu_id}")
     storage = optuna.storages.RDBStorage(
@@ -103,7 +104,7 @@ def run_worker(gpu_id, cache_dir, default_config_file, n_trials, db_path):
         storage=storage
     )
     study.optimize(
-        lambda trial: objective(trial, cache_dir, default_config_file, device),
+        lambda trial: objective(trial, cache_dir, default_config_file, training_set_fraction, device),
         n_trials=n_trials,
     )
 
@@ -119,11 +120,15 @@ def main():
         help="<Required> number of trials to execute by Optuna."
     )
     parser.add_argument(
-        "--db-path", type=str, default="optuna_results.db",
+        "training_set_fraction", type=float, default=0.1,
+        help="Fraction of the full training set to use for each trial. Set to a smaller value to speed up trials at the cost of more noise in the objective. Defaults to 0.1."
+    )
+    parser.add_argument(
+        "db_path", type=str, default="optuna_results.db",
         help="Path to Optuna SQLite DB. Must be on a shared filesystem for multi-node."
     )
     parser.add_argument(
-        "--cache-dir", type=str, default="./optuna_cache",
+        "cache_dir", type=str, default="./optuna_cache",
         help="Base directory for per-node trial caches. Each node writes to <cache-dir>/node<N>/."
     )
     command_line_args = parser.parse_args()
@@ -139,6 +144,7 @@ def main():
         logger.warning("Failed to parse SLURM_NODEID, defaulting to 0")
     num_gpus = torch.cuda.device_count() # <- GPUs on the given node
     db_path = command_line_args.db_path
+    training_set_fraction = command_line_args.training_set_fraction
 
     # Create study once (workers load it)
     try:
@@ -152,6 +158,11 @@ def main():
         pass  # another node created the study first
 
     cache_dir = os.path.abspath(os.path.join(command_line_args.cache_dir, f"node{node_id}"))
+    if node_id == 0:
+        logger.info(f"Running {command_line_args.n_trials} trials using {num_gpus} GPUs across {num_nodes} nodes for optimization.")
+        logger.info(f"Optuna results will be saved to {db_path}")
+        logger.info(f"Each trial will use {training_set_fraction*100}% of the full training data and last a max of 300 epochs.")
+    
     logger.info(f"Node {node_id} creating cache directory {cache_dir}...")
     create_cache(cache_dir)
 
@@ -163,7 +174,7 @@ def main():
         logger.info(f"Running trials on device {device}")
         study = optuna.load_study(study_name="combined_tracer", storage=f"sqlite:///{db_path}")
         study.optimize(
-            lambda trial: objective(trial, cache_dir, default_config_file, device),
+            lambda trial: objective(trial, cache_dir, default_config_file, training_set_fraction, device),
             n_trials=command_line_args.n_trials,
         )
     else:
@@ -172,7 +183,7 @@ def main():
         mp.set_start_method("spawn", force=True)
         mp.spawn(
             run_worker,
-            args=(cache_dir, default_config_file, command_line_args.n_trials // num_gpus // num_nodes, db_path),
+            args=(cache_dir, default_config_file, command_line_args.n_trials // num_gpus // num_nodes, db_path, training_set_fraction),
             nprocs=num_gpus,
             join=True
         )

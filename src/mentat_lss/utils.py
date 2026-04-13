@@ -505,17 +505,17 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
 
     return avg_loss / (len(data_loader.dataset))
 
-def calc_chi2_statistics(emulator, data_loader):
+def calc_chi2_statistics(emulator, data_loader, calc_partial=True):
     """Calculates the delta chi2 statistics of the emulator predictions on the given dataset, both for each individual sub-network and for the combined emulator output.
 
     Args:
         emulator (ps_emulator): emulator object to calculate the delta chi2 statistics with
         data_loader (DataLoader): dataset to calculate the delta chi2 statistics on. Should be a Pytorch DataLoader object containing the test set.
-
+        calc_partial (bool, optional): whether or not to calculate the delta chi2 statistics for each individual sub-network. If False, only calculates the delta chi2 statistic for the combined emulator output. Defaults to True.
     Returns:
         tuple: A tuple containing the delta chi2 statistics for each sub-network and the combined emulator output.
     """
-    delta_chi2 = np.zeros((emulator.num_spectra, emulator.num_zbins, len(data_loader.dataset)))
+    delta_chi2_partial = np.zeros((emulator.num_spectra, emulator.num_zbins, len(data_loader.dataset)))
     delta_chi2_combined = np.zeros(len(data_loader.dataset))
     save_idx = 0
 
@@ -535,29 +535,30 @@ def calc_chi2_statistics(emulator, data_loader):
         for j in range(len(pk_idx)):
 
             #loop thru networks
-            for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
-                
-                prediction = pk_pred_raw[j, ps, z].unsqueeze(0)
-                target = pk_raw[j, ps, z].unsqueeze(0)
+            if calc_partial == True:
+                for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
+                    
+                    prediction = pk_pred_raw[j, ps, z].unsqueeze(0)
+                    target = pk_raw[j, ps, z].unsqueeze(0)
 
-                chi2 = delta_chi_squared(prediction, target, emulator.invcov_full, True)
-                delta_chi2[ps, z, save_idx] = chi2.item()
+                    chi2 = delta_chi_squared(prediction, target, emulator.invcov_full, True)
+                    delta_chi2_partial[ps, z, save_idx] = chi2.item()
 
             delta_chi2_combined[save_idx] = delta_chi_squared(pk_pred[j], pk_true[j], emulator.invcov_full, False)
 
             save_idx += 1
 
-    return delta_chi2, delta_chi2_combined
+    return delta_chi2_partial, delta_chi2_combined
 
 def normalize_cosmo_params(params:torch.Tensor, normalizations:torch.Tensor):
     """Linearly normalizes input cosmology + bias parameters to lie within the range [0,1]
 
     Args:
         params (torch.Tensor): batch of input parameters to normalize. Should have shape [batch, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)].
-        normalizations (torch.Tensor): Tensor of parameter minima and maxima. Should have shape [2, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)
+        normalizations (torch.Tensor): Tensor of parameter minima and maxima. Should have shape [2, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)]
 
     Returns:
-        norm_params (torch.Tensor): batch of normalized input parameters. has shape [batch, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)
+        norm_params (torch.Tensor): batch of normalized input parameters. has shape [batch, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)]
     """
 
     return (params - normalizations[0]) / (normalizations[1] - normalizations[0])

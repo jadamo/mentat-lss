@@ -48,10 +48,11 @@ class single_zbin_transformer(nn.Module):
                                         config_dict["galaxy_ps_emulator"]["use_skip_connection"]))
 
         if self.num_transformer_blocks > 0:
-            # k-bin tokenization: project each k-bin from num_ells → token_proj_dim, add positional encoding
             token_proj_dim = config_dict["galaxy_ps_emulator"]["token_proj_dim"]
-            self.token_proj_layer = nn.Linear(self.num_ells, token_proj_dim)
-            self.pos_encoding = nn.Parameter(torch.zeros(self.num_kbins, token_proj_dim))
+            self.token_proj_dim = token_proj_dim
+            # expand full MLP output into per-k-bin tokens
+            self.embedding_layer = nn.Linear(self.output_dim, self.num_kbins * token_proj_dim)
+            self.pos_encoding = nn.Parameter(torch.randn(self.num_kbins, token_proj_dim) * 0.02)
             self.token_unproj_layer = nn.Linear(token_proj_dim, self.num_ells)
 
             num_heads = config_dict["galaxy_ps_emulator"].get("num_heads", 1)
@@ -69,10 +70,12 @@ class single_zbin_transformer(nn.Module):
         X = self.input_layer(X)
         X = self.mlp_blocks(X)
         if self.num_transformer_blocks > 0:
-            X = X.reshape(-1, self.num_kbins, self.num_ells)
-            X = self.token_proj_layer(X) + self.pos_encoding
+            mlp_out = X
+            X = self.embedding_layer(X).reshape(-1, self.num_kbins, self.token_proj_dim)
+            X = X + self.pos_encoding
             X = self.transformer_blocks(X)
-            X = self.token_unproj_layer(X)
+            X = self.token_unproj_layer(X).reshape(-1, self.output_dim)
+            X = X + mlp_out
         return X.reshape(-1, self.output_dim)
 
 class combined_tracer_transformer(nn.Module):

@@ -6,7 +6,7 @@ import os
 
 import optuna
 from mentat_lss.emulator import ps_emulator, compile_multiple_device_training_results
-from mentat_lss.utils import calc_avg_loss, normalize_cosmo_params
+from mentat_lss.utils import calc_avg_loss, calc_chi2_statistics, normalize_cosmo_params
 
 
 def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.data.DataLoader, bin_idx:list):
@@ -129,8 +129,8 @@ def train_on_single_device(emulator:ps_emulator, trial=None):
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
                 emulator.logger.info(f"Model {net_id_str} has not improved for {epochs_since_update[net_idx]} epochs. Initiating early stopping...")
 
-        if trial != None:
-            accuracy = torch.mean([emulator.valid_loss[net_idx][-1] for net_idx in range(len(emulator.valid_loss))])
+        if trial != None and epoch % 2 == 0 and epoch > 0:
+            accuracy = torch.median(calc_chi2_statistics(emulator, valid_loader, calc_partial=False)).item()
             trial.report(accuracy, epoch)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
