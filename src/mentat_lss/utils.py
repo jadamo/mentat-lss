@@ -505,22 +505,23 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
 
     return avg_loss / (len(data_loader.dataset))
 
-def calc_chi2_statistics(emulator, data_loader, calc_partial=True):
+def calc_chi2_statistics(emulator, data_loader, calc_partial=True, print_progress=True):
     """Calculates the delta chi2 statistics of the emulator predictions on the given dataset, both for each individual sub-network and for the combined emulator output.
 
     Args:
         emulator (ps_emulator): emulator object to calculate the delta chi2 statistics with
         data_loader (DataLoader): dataset to calculate the delta chi2 statistics on. Should be a Pytorch DataLoader object containing the test set.
         calc_partial (bool, optional): whether or not to calculate the delta chi2 statistics for each individual sub-network. If False, only calculates the delta chi2 statistic for the combined emulator output. Defaults to True.
+        print_progress (bool, optional): whether or not to print a progress bar while calculating the delta chi2 statistics. Defaults to True.
     Returns:
         tuple: A tuple containing the delta chi2 statistics for each sub-network and the combined emulator output.
     """
-    delta_chi2_partial = np.zeros((emulator.num_spectra, emulator.num_zbins, len(data_loader.dataset)))
-    delta_chi2_combined = np.zeros(len(data_loader.dataset))
+    delta_chi2_partial = torch.zeros((emulator.num_spectra, emulator.num_zbins, len(data_loader.dataset)))
+    delta_chi2_combined = torch.zeros(len(data_loader.dataset))
     save_idx = 0
 
     # calculating delta chi2 in batches is much faster (~100x) than doing so individually
-    for (i, batch) in enumerate(tqdm(data_loader)):
+    for (i, batch) in enumerate(tqdm(data_loader, disable=not print_progress)):
 
         params = batch[0].to("cpu").detach().numpy()
         pk_idx = batch[2].to(torch.int)

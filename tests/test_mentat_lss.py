@@ -1,6 +1,7 @@
 import pytest
 import os
 import numpy as np
+import torch
 import yaml
 import shutil
 
@@ -120,7 +121,7 @@ def test_ps_emulator_workflow(net_type):
     test_loader = test_emulator.load_data("testing", 1.0, True, net_config["training_dir"])
 
     chi2_sub, chi2_combined = calc_chi2_statistics(test_emulator, test_loader)
-    assert np.all(np.isnan(chi2_sub)) == False, "Delta chi2 statistics contain NaN values. There may be an issue with the emulator predictions or the test dataset."
-    assert np.all(np.isnan(chi2_combined)) == False, "Delta chi2 statistics contain NaN values. There may be an issue with the emulator predictions or the test dataset."
+    assert torch.all(torch.isnan(chi2_sub)) == False, "Delta chi2 statistics contain NaN values. There may be an issue with the emulator predictions or the test dataset."
+    assert torch.all(torch.isnan(chi2_combined)) == False, "Delta chi2 statistics contain NaN values. There may be an issue with the emulator predictions or the test dataset."
 
     clean_small_training_set(net_config)

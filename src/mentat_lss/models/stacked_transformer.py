@@ -42,7 +42,7 @@ class single_transformer(nn.Module):
                                         self.output_dim,
                                         config_dict["galaxy_ps_emulator"].get("hidden_dim_factor", 1.0),
                                         config_dict["galaxy_ps_emulator"]["num_block_layers"],
-                                        "batch",
+                                        "layer",
                                         config_dict["galaxy_ps_emulator"]["use_skip_connection"]))
         
         if self.num_transformer_blocks > 0:
@@ -109,6 +109,13 @@ class stacked_transformer(nn.Module):
                 if isample1 > isample2: continue
                 self.networks.append(single_transformer(config_dict, (isample1 != isample2)))
 
+        # Precompute (z, t1, t2) index buffers for vectorized organize_parameters
+        pairs = [(t1, t2) for t1 in range(self.num_tracers)
+                          for t2 in range(self.num_tracers) if t1 <= t2]
+        self.register_buffer('_z_idx',  torch.tensor([z  for z in range(self.num_zbins) for _ in pairs], dtype=torch.long))
+        self.register_buffer('_t1_idx', torch.tensor([t1 for _ in range(self.num_zbins) for t1, _ in pairs], dtype=torch.long))
+        self.register_buffer('_t2_idx', torch.tensor([t2 for _ in range(self.num_zbins) for _, t2 in pairs], dtype=torch.long))
+
     def organize_parameters(self, input_params):
         """Organizes input cosmology + bias parameters into a form the rest of the network expects
         
@@ -119,38 +126,21 @@ class stacked_transformer(nn.Module):
                 The bias parameters are split corresponding to their respective redshift / tracer bin
         """
 
-        # parameters shape is (b, nz*nps, num_cosmo*2*num_nuisance)
-        organized_params = torch.zeros((input_params.shape[0],
-                                       self.num_spectra * self.num_zbins, 
-                                       self.num_cosmo_params + (2*self.num_nuisance_params)),
-                                       device=input_params.device)
-
-        # fill cosmology parameters (the same for every bin)
-        organized_params[:,:, :self.num_cosmo_params] = input_params[:, :self.num_cosmo_params].unsqueeze(1)
-        # fill bias params
-        # ordering is [params for tracer 1, params for tracer 2]
-        iter = 0
-        for z in range(self.num_zbins):
-            for isample1, isample2 in itertools.product(range(self.num_tracers), repeat=2):
-                if isample1 > isample2: continue
-                
-                idx_1 = (z*self.num_tracers) + isample1
-                idx_2 = (z*self.num_tracers) + isample2
-                iterate = self.num_tracers*self.num_zbins
-
-                organized_params[:, iter, self.num_cosmo_params:self.num_cosmo_params+self.num_nuisance_params] \
-                    = input_params[:, self.num_cosmo_params+idx_1::iterate]
-                organized_params[:, iter, self.num_cosmo_params+self.num_nuisance_params:self.num_cosmo_params+2*self.num_nuisance_params] \
-                    = input_params[:, self.num_cosmo_params+idx_2::iterate]
-                iter+=1
-
-        return organized_params
+        bsize = input_params.shape[0]
+        cosmo    = input_params[:, :self.num_cosmo_params]
+        nuisance = input_params[:, self.num_cosmo_params:]
+        nuisance = nuisance.reshape(bsize, self.num_nuisance_params, self.num_zbins, self.num_tracers)
+        nuisance = nuisance.permute(0, 2, 3, 1)                             # [b, nz, nt, nn]
+        cosmo_exp = cosmo.unsqueeze(1).expand(-1, len(self._z_idx), -1)
+        nus1 = nuisance[:, self._z_idx, self._t1_idx, :]                    # [b, nz*nspectra, nn]
+        nus2 = nuisance[:, self._z_idx, self._t2_idx, :]
+        return torch.cat([cosmo_exp, nus1, nus2], dim=-1)                   # [b, nz*nspectra, nc+2*nn]
 
     def forward(self, input_params, net_idx = None):
         """Passes an input tensor through the network"""
         
         # feed parameters through all sub-networks
-        if net_idx == None:
+        if net_idx is None:
             X = torch.zeros((input_params.shape[0], self.num_spectra, self.num_zbins, self.output_dim), device=input_params.device)
             
             for (z, ps) in itertools.product(range(self.num_zbins), range(self.num_spectra)):

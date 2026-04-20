@@ -130,7 +130,7 @@ def train_on_single_device(emulator:ps_emulator, trial=None):
                 emulator.logger.info(f"Model {net_id_str} has not improved for {epochs_since_update[net_idx]} epochs. Initiating early stopping...")
 
         if trial != None and epoch % 2 == 0 and epoch > 0:
-            accuracy = torch.median(calc_chi2_statistics(emulator, valid_loader, calc_partial=False)).item()
+            accuracy = torch.median(calc_chi2_statistics(emulator, valid_loader, calc_partial=False, print_progress=False)[1]).item()
             trial.report(accuracy, epoch)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
