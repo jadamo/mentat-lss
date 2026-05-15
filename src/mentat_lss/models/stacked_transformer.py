@@ -23,6 +23,7 @@ class single_transformer(nn.Module):
         self.num_kbins = config_dict["num_kbins"]
         self.num_nuisance_params = config_dict["num_nuisance_params"]
         self.num_transformer_blocks = config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]
+        self.add_mlp_output = config_dict["galaxy_ps_emulator"]["add_mlp_output"]
 
         # size of input depends on wether or not the network is for the crosss spectra
         self.is_cross_spectra = is_cross_spectra
@@ -46,18 +47,22 @@ class single_transformer(nn.Module):
                                         config_dict["galaxy_ps_emulator"]["use_skip_connection"]))
         
         if self.num_transformer_blocks > 0:
-            token_proj_dim = config_dict["galaxy_ps_emulator"]["token_proj_dim"]
-            self.token_proj_dim = token_proj_dim
-            # expand full MLP output into per-k-bin tokens
-            self.embedding_layer = nn.Linear(self.output_dim, self.num_kbins * token_proj_dim)
-            self.pos_encoding = nn.Parameter(torch.randn(self.num_kbins, token_proj_dim) * 0.02)
-            self.token_unproj_layer = nn.Linear(token_proj_dim, self.num_ells)
+            # expand mlp section output
+            split_dim = config_dict["galaxy_ps_emulator"]["split_dim"]
+            split_size = config_dict["galaxy_ps_emulator"]["split_size"]
+            embedding_dim = split_size*split_dim
+            self.embedding_layer = nn.Linear(self.output_dim, embedding_dim)
 
-            num_heads = config_dict["galaxy_ps_emulator"].get("num_heads", 1)
+            # do one transformer block per z-bin for now
             self.transformer_blocks = nn.Sequential()
             for i in range(config_dict["galaxy_ps_emulator"]["num_transformer_blocks"]):
                 self.transformer_blocks.add_module("Transformer"+str(i+1),
-                        blocks.block_transformer_encoder(token_proj_dim, 0.1, num_heads))
+                        blocks.block_transformer_encoder(embedding_dim, split_dim, 0.1))
+                self.transformer_blocks.add_module("Activation"+str(i+1), 
+                        blocks.activation_function(embedding_dim))
+
+            self.output_layer = nn.Linear(embedding_dim, self.output_dim)          
+
 
     def forward(self, input_params:torch.Tensor):
         """Passes an input tensor through the network"""
@@ -68,12 +73,13 @@ class single_transformer(nn.Module):
         X = self.input_layer(input_params)
         X = self.mlp_blocks(X)
         if self.num_transformer_blocks > 0:
-            mlp_out = X
-            X = self.embedding_layer(X).reshape(-1, self.num_kbins, self.token_proj_dim)
-            X = X + self.pos_encoding
+            if self.add_mlp_output:
+                mlp_output = X
+            X = self.embedding_layer(X)
             X = self.transformer_blocks(X)
-            X = self.token_unproj_layer(X).reshape(-1, self.output_dim)
-            X = X + mlp_out
+            X = self.output_layer(X)
+            if self.add_mlp_output:
+                X = X + mlp_output
         return X
 
 class stacked_transformer(nn.Module):

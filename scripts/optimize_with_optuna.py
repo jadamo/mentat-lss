@@ -1,10 +1,13 @@
 import os
+import time
 import logging
 import optuna
 import shutil
 import yaml
 import argparse
-import torch 
+import torch
+
+from sqlalchemy.exc import OperationalError as SQLAlchemyOperationalError
 
 import mentat_lss.training_loops as training_loops
 from mentat_lss.utils import load_config_file, calc_chi2_statistics
@@ -18,6 +21,18 @@ def clean_cache(cache_dir):
     if os.path.exists(cache_dir):
         shutil.rmtree(cache_dir)
 
+def write_done_sentinel(base_cache_dir, node_id):
+    sentinel = os.path.join(base_cache_dir, f"node{node_id}.done")
+    open(sentinel, 'w').close()
+
+def wait_for_all_nodes(base_cache_dir, num_nodes, poll_interval=15):
+    while True:
+        done = sum(1 for i in range(num_nodes)
+                   if os.path.exists(os.path.join(base_cache_dir, f"node{i}.done")))
+        if done == num_nodes:
+            break
+        time.sleep(poll_interval)
+
 def define_model(trial, cache_dir, default_config_file, training_set_fraction, device=None):
 
     trial_config_file = default_config_file.copy()
@@ -28,23 +43,22 @@ def define_model(trial, cache_dir, default_config_file, training_set_fraction, d
     hidden_dim_factor = trial.suggest_float("hidden_dim_factor", 1.0, 2.0)
     batch_size = trial.suggest_int("batch_size", 100, 1000, step=50)
     learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2)
-    # token_proj_dim is a multiple of 8, so num_heads in [1,2,4,8] always divides it.
-    token_proj_dim = trial.suggest_int("token_proj_dim", 8, 64, step=8)
-    num_heads = trial.suggest_categorical("num_heads", [1, 2, 4, 8])
+    split_dim = trial.suggest_int("split_dim", 2, 10)
+    split_size = trial.suggest_int("split_size", 4, 32)
     spectrum_embed_dim = trial.suggest_int("spectrum_embed_dim", 2, 10)
 
     trial_config_file["galaxy_ps_emulator"]["num_mlp_blocks"] = num_mlp_blocks
     trial_config_file["galaxy_ps_emulator"]["num_block_layers"] = num_block_layers
     trial_config_file["galaxy_ps_emulator"]["hidden_dim_factor"] = hidden_dim_factor
     trial_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = num_transformer_blocks
-    trial_config_file["galaxy_ps_emulator"]["token_proj_dim"] = token_proj_dim
+    trial_config_file["galaxy_ps_emulator"]["split_dim"] = split_dim
+    trial_config_file["galaxy_ps_emulator"]["split_size"] = split_size
     trial_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = spectrum_embed_dim
-    trial_config_file["galaxy_ps_emulator"]["num_heads"] = num_heads
     trial_config_file["batch_size"] = batch_size
     trial_config_file["galaxy_ps_learning_rate"] = learning_rate
     # to save time, only train with 10% of the full data and for only 150 epochs
     trial_config_file["training_set_fraction"] = training_set_fraction
-    trial_config_file["num_epochs"] = 300
+    trial_config_file["num_epochs"] = 200
 
     # Use an absolute path for save_dir so os.path.join(input_dir, save_dir) resolves
     # to this location regardless of what input_dir is set to.
@@ -62,9 +76,9 @@ def save_best_params(save_loc, default_config_file, best_params):
     best_config_file["galaxy_ps_emulator"]["num_block_layers"] = best_params["num_block_layers"]
     best_config_file["galaxy_ps_emulator"]["hidden_dim_factor"] = best_params["hidden_dim_factor"]
     best_config_file["galaxy_ps_emulator"]["num_transformer_blocks"] = best_params["num_transformer_blocks"]
-    best_config_file["galaxy_ps_emulator"]["token_proj_dim"] = best_params["token_proj_dim"]
+    best_config_file["galaxy_ps_emulator"]["split_dim"] = best_params["split_dim"]
+    best_config_file["galaxy_ps_emulator"]["split_size"] = best_params["split_size"]
     best_config_file["galaxy_ps_emulator"]["spectrum_embed_dim"] = best_params["spectrum_embed_dim"]
-    best_config_file["galaxy_ps_emulator"]["num_heads"] = best_params["num_heads"]
     best_config_file["batch_size"] = best_params["batch_size"]
     best_config_file["galaxy_ps_learning_rate"] = best_params["learning_rate"]
 
@@ -82,7 +96,7 @@ def objective(trial, cache_dir, default_config_file, training_set_fraction, devi
 
     # Use the median delta chi2 from the full emulator validation set as the objective
     valid_loader = emulator.load_data("validation")
-    chi2_stats = calc_chi2_statistics(emulator, valid_loader, calc_partial=False)
+    _, chi2_stats = calc_chi2_statistics(emulator, valid_loader, calc_partial=False, print_progress=False)
     result = torch.median(chi2_stats).item()
 
     # clean up trial save directory to avoid filling disk
@@ -154,7 +168,7 @@ def main():
             study_name="combined_tracer",
             pruner=optuna.pruners.MedianPruner(),
         )
-    except optuna.exceptions.DuplicatedStudyError:
+    except (optuna.exceptions.DuplicatedStudyError, SQLAlchemyOperationalError):
         pass  # another node created the study first
 
     cache_dir = os.path.abspath(os.path.join(command_line_args.cache_dir, f"node{node_id}"))
@@ -187,19 +201,29 @@ def main():
             nprocs=num_gpus,
             join=True
         )
-    study = optuna.load_study(study_name="combined_tracer", storage=f"sqlite:///{db_path}")
+    # Signal that this node has finished all its trials
+    base_cache_dir = command_line_args.cache_dir
+    write_done_sentinel(base_cache_dir, node_id)
 
+    # Node 0 waits for every node to finish before reporting the global best
     if node_id == 0:
+        logger.info("Waiting for all nodes to finish...")
+        wait_for_all_nodes(base_cache_dir, num_nodes)
+
+        study = optuna.load_study(study_name="combined_tracer", storage=f"sqlite:///{db_path}")
         print("Best trial:")
         trial = study.best_trial
         print("  Value: ", trial.value)
-
         print("  Params: ")
         for key, value in trial.params.items():
             print(f"    {key}: {value}")
-
         save_best_params(command_line_args.config_file, default_config_file, trial.params)
-    
+
+        for i in range(num_nodes):
+            sentinel = os.path.join(base_cache_dir, f"node{i}.done")
+            if os.path.exists(sentinel):
+                os.remove(sentinel)
+
     clean_cache(cache_dir)
 
 if __name__ == "__main__":

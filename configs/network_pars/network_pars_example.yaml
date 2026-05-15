@@ -19,7 +19,6 @@ num_nuisance_params : 3 # <- per tracer
 # specifications are for each network - will be repeated for each sample / redshift bin
 galaxy_ps_emulator:
   # mlp parameters
-  spectrum_embed_dim  : 8
   num_mlp_blocks      : 2
   num_block_layers    : 5
   hidden_dim_factor   : 1.0
@@ -27,8 +26,9 @@ galaxy_ps_emulator:
 
   # transformer parameters
   num_transformer_blocks : 2
-  token_proj_dim         : 16
-  num_heads              : 2
+  split_dim              : 5
+  split_size             : 20
+  add_mlp_output         : False
 
 # Training parameters
 num_epochs: 500

@@ -27,7 +27,9 @@ galaxy_ps_emulator:
 
   # transformer parameters
   num_transformer_blocks : 2
-  token_proj_dim         : 16
+  split_dim              : 4
+  split_size             : 4
+  add_mlp_output         : True
 
 # Training parameters
 num_epochs: 10
