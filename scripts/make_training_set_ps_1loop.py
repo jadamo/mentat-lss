@@ -84,33 +84,38 @@ def apply_window(galaxy_ps_unwin, W):
 
     return galaxy_psm_win
 
-def get_power_spectrum(samples, k, param_names, cosmo_dict, ps_config, theory, W=None, use_window=False):
+def get_power_spectrum(samples, k, param_names, cosmo_dict, ps_config, theory, output_dir, rank=0, W=None, use_window=False):
 
     num_tracers = ps_config['number_density_table'].shape[0]
     num_spectra = num_tracers + math.comb(num_tracers, 2)
     num_zbins = len(ps_config["redshift_list"])
+    checkpoint_iter = 50
 
     num_to_calculate = len(samples)
-    galaxy_ps = np.zeros((num_to_calculate, num_spectra, num_zbins, len(k), len(ells)))
+    if use_window:
+        galaxy_ps = np.zeros((num_to_calculate, num_spectra, num_zbins, W.shape[-3], W.shape[-4]))
+    else:
+        galaxy_ps = np.zeros((num_to_calculate, num_spectra, num_zbins, len(k), len(ells)))
     result = np.zeros(num_to_calculate)
 
     for idx in range(num_to_calculate):
         sample_dict = dict(zip(param_names, samples[idx]))
         param_vector = prepare_ps_inputs(sample_dict, cosmo_dict, num_tracers, num_zbins)
-        try:
-            ps = theory(k, ells, param_vector)
-            if use_window:
-                ps = apply_window(ps, W)
-            ps = np.transpose(ps, (1, 0, 3, 2))
-            if not np.any(np.isnan(ps)) and \
-                not np.any(np.isinf(ps)): 
-                galaxy_ps[idx] = ps
-            else: 
-                print("NaN or inf fouund in power spectrum!")
-                result[idx] = -1
-        except:
-            print("Power spectrum calculation failed!")
+        ps = theory(k, ells, param_vector)
+        if use_window: ps = apply_window(ps, W)
+
+        ps = np.transpose(ps, (1, 0, 3, 2))
+        if not np.any(np.isnan(ps)) and \
+            not np.any(np.isinf(ps)): 
+            galaxy_ps[idx] = ps
+        else: 
+            print("NaN or inf fouund in power spectrum!")
             result[idx] = -1
+
+        # save progress after a certain amount of iterations
+        if idx % checkpoint_iter == 0 and output_dir != None:
+            print(f"Rank {rank} ({idx+1}/{num_to_calculate} done) saving progress...")
+            np.savez(os.path.join(output_dir,"pk-raw_"+str(rank)+"_.npz"), params=samples, galaxy_ps=np.array(galaxy_ps))
 
     return galaxy_ps, result
 #-------------------------------------------------------------------
@@ -119,8 +124,8 @@ def get_power_spectrum(samples, k, param_names, cosmo_dict, ps_config, theory, W
 def main():
 
     comm = MPI.COMM_WORLD
-    size = MPI.COMM_WORLD.Get_size()
-    rank = MPI.COMM_WORLD.Get_rank()
+    size = comm.Get_size()
+    rank = comm.Get_rank()
 
     if len(sys.argv) < 7:
         if rank == 0: print("USAGE: python make_training_set_eft.py <cosmo_config_file> <survey_config_file> <save_dir> <k array file> <N> <mode>")
@@ -160,9 +165,10 @@ def main():
 
     k_data = np.load(k_array_file)
     if use_window:
-        W = np.load(os.path.join(save_dir, "W.npz"))["W"]
-        k = k_data["k_unwin"]
-        k_save = k_data["k_win"]
+        W_data = np.load(os.path.join(save_dir, "W.npz"))
+        W = W_data["W"]
+        k = W_data["k_unwin"]
+        k_save = W_data["k_win"]
     else:
         W = None
         k = k_data["k"]
@@ -216,7 +222,7 @@ def main():
 
         # first, generate the power spectrum at the fiducial cosmology
         print("Generating fiducial power spectrum...")
-        galaxy_ps, result = get_power_spectrum([{}], k, param_names, cosmo_dict, ps_config, theory, W, use_window)
+        galaxy_ps, result = get_power_spectrum([{}], k, param_names, cosmo_dict, ps_config, theory, save_dir, rank, W, use_window)
         if result[0] == 0:
             np.save(os.path.join(save_dir,"ps_fid.npy"), galaxy_ps)
             np.savez(os.path.join(save_dir,"ps_properties.npz"), k=k_save, z_eff=z_eff, ells=np.array(ells), ndens=ndens_table)
@@ -227,7 +233,7 @@ def main():
     t1 = time.time()
     if rank == 0: print("Generating", str(int(N)), "power spectra across", str(size), "processors ("+str(int(N / size))+" per processor)...")
 
-    galaxy_ps, result = get_power_spectrum(rank_samples, k, param_names, cosmo_dict, ps_config, theory, W, use_window)
+    galaxy_ps, result = get_power_spectrum(rank_samples, k, param_names, cosmo_dict, ps_config, theory, save_dir, rank, W, use_window)
 
     # aggregate data
     galaxy_ps = np.array(galaxy_ps)
