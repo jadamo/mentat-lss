@@ -4,6 +4,7 @@
 import time, math, yaml, sys, os
 import numpy as np
 from mpi4py import MPI
+import argparse
 
 import ps_theory_calculator_camb as ps_theory_calculator
 from mentat_lss.utils import *
@@ -36,6 +37,24 @@ def is_fiducial_cosmology_in_hyperspere(cosmo_dict, param_ranges):
 
     return is_in_hypersphere(param_ranges, np.array(cosmo_fid))
 
+def apply_w0_wa_constraint(samples, param_names):
+    w0_idx = None
+    wa_idx = None
+    for i, name in enumerate(param_names):
+        if name == "w0":
+            w0_idx = i
+        elif name == "wa":
+            wa_idx = i
+
+    if w0_idx is not None and wa_idx is not None:
+        w0 = samples[:, w0_idx]
+        wa = samples[:, wa_idx]
+        constraint_mask = (w0 + wa < 0)
+        return samples[constraint_mask]
+    else:
+        print("w0 or wa not found in cosmological parameters. No constraint applied.")
+        return samples
+
 def prepare_header_info(param_names, fiducial_cosmology, n_samples):
 
     header_info = {}
@@ -53,7 +72,19 @@ def prepare_header_info(param_names, fiducial_cosmology, n_samples):
     header_info["nuisance_params"] = bias_params
     return header_info
 
-def get_power_spectrum(samples, k, param_names, cosmo_dict, ps_config, theory):
+def apply_window(galaxy_ps_unwin, W):
+    nz, nps, _, _ = galaxy_ps_unwin.shape
+    nk = W.shape[-3]
+    nl = W.shape[-4]
+    galaxy_psm_win = np.zeros((nz, nps, nl, nk))
+
+    for iz in range(nz):
+        for ips in range(nps):
+            galaxy_psm_win[iz,ips,:,:] = np.einsum("lkLQ,LQ->lk", W[iz,ips,:,:,:,:], galaxy_ps_unwin[iz,ips,:,:], optimize=True)
+
+    return galaxy_psm_win
+
+def get_power_spectrum(samples, k, param_names, cosmo_dict, ps_config, theory, W=None, use_window=False):
 
     num_tracers = ps_config['number_density_table'].shape[0]
     num_spectra = num_tracers + math.comb(num_tracers, 2)
@@ -67,7 +98,9 @@ def get_power_spectrum(samples, k, param_names, cosmo_dict, ps_config, theory):
         sample_dict = dict(zip(param_names, samples[idx]))
         param_vector = prepare_ps_inputs(sample_dict, cosmo_dict, num_tracers, num_zbins)
         try:
-            ps = theory(k, ells, param_vector) / cosmo_dict["cosmo_params"]["h"]["value"]**3
+            ps = theory(k, ells, param_vector)
+            if use_window:
+                ps = apply_window(ps, W)
             ps = np.transpose(ps, (1, 0, 3, 2))
             if not np.any(np.isnan(ps)) and \
                 not np.any(np.isinf(ps)): 
@@ -93,12 +126,30 @@ def main():
         if rank == 0: print("USAGE: python make_training_set_eft.py <cosmo_config_file> <survey_config_file> <save_dir> <k array file> <N> <mode>")
         return -1
 
-    cosmo_config_file  = sys.argv[1]
-    survey_config_file = sys.argv[2]
-    save_dir           = sys.argv[3]
-    k_array_file       = sys.argv[4]
-    N                  = int(sys.argv[5])
-    mode               = sys.argv[6]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("cosmo_config_file", type=str,
+                        help="Path to cosmological + nuisance parameter config file (yaml format)")
+    parser.add_argument("survey_config_file", type=str,
+                        help="Path to survey config file (yaml format)")
+    parser.add_argument("save_dir", type=str,
+                        help="Path to save directory")
+    parser.add_argument("k_array_file", type=str,
+                        help="Path to k array file")
+    parser.add_argument("N", type=int,
+                        help="Number of samples to generate")
+    parser.add_argument("mode", type=str, default="hypersphere",
+                        help="Mode for generating samples")
+    parser.add_argument("--windowed", action="store_true",
+                        help="Apply window to the power spectrum. Must have a window file in the training directory")
+    args = parser.parse_args()
+
+    cosmo_config_file  = args.cosmo_config_file
+    survey_config_file = args.survey_config_file
+    save_dir           = args.save_dir
+    k_array_file       = args.k_array_file
+    N                  = args.N
+    mode               = args.mode
+    use_window         = args.windowed
 
     if not os.path.exists(save_dir):
         print("Attempting to create save directory...")
@@ -107,9 +158,15 @@ def main():
     cosmo_dict  = load_config_file(cosmo_config_file)
     survey_dict = load_config_file(survey_config_file)
 
-    # TODO: Upgrade to handle different k-bins for different redshifts
     k_data = np.load(k_array_file)
-    k = k_data["k"]
+    if use_window:
+        W = np.load(os.path.join(save_dir, "W.npz"))["W"]
+        k = k_data["k_unwin"]
+        k_save = k_data["k_win"]
+    else:
+        W = None
+        k = k_data["k"]
+        k_save = k
 
     ndens_table = np.array([[float(survey_dict['number_density_in_hinvMpc_%s' % (i+1)][j]) for j in range(survey_dict['nz'])] for i in range(survey_dict['nsample'])])
     z_eff = (np.array(survey_dict["zbin_lo"]) + np.array(survey_dict["zbin_hi"])) / 2.
@@ -131,6 +188,7 @@ def main():
             all_samples = make_latin_hypercube(param_ranges, N)
         elif mode == "hypersphere": 
             all_samples = make_hypersphere(param_ranges, num_params, N)
+            all_samples = apply_w0_wa_constraint(all_samples, param_names)
             is_valid_cosmo, r = is_fiducial_cosmology_in_hyperspere(cosmo_dict, param_ranges)
             if not is_valid_cosmo:
                 raise ValueError(f"Fiducial cosmology is outside of hypersphere! r = {r}")
@@ -158,10 +216,10 @@ def main():
 
         # first, generate the power spectrum at the fiducial cosmology
         print("Generating fiducial power spectrum...")
-        galaxy_ps, result = get_power_spectrum([{}], k, param_names, cosmo_dict, ps_config, theory)
-        if result == 0:
+        galaxy_ps, result = get_power_spectrum([{}], k, param_names, cosmo_dict, ps_config, theory, W, use_window)
+        if result[0] == 0:
             np.save(os.path.join(save_dir,"ps_fid.npy"), galaxy_ps)
-            np.savez(os.path.join(save_dir,"ps_properties.npz"), k=k, z_eff=z_eff, ells=np.array(ells), ndens=ndens_table)
+            np.savez(os.path.join(save_dir,"ps_properties.npz"), k=k_save, z_eff=z_eff, ells=np.array(ells), ndens=ndens_table)
         else:
             print("ERROR! failed to calculate fiducial power spectrum! Exiting...")
             return -1
@@ -169,7 +227,7 @@ def main():
     t1 = time.time()
     if rank == 0: print("Generating", str(int(N)), "power spectra across", str(size), "processors ("+str(int(N / size))+" per processor)...")
 
-    galaxy_ps, result = get_power_spectrum(rank_samples, k, param_names, cosmo_dict, ps_config, theory)
+    galaxy_ps, result = get_power_spectrum(rank_samples, k, param_names, cosmo_dict, ps_config, theory, W, use_window)
 
     # aggregate data
     galaxy_ps = np.array(galaxy_ps)
@@ -201,7 +259,7 @@ def main():
     if rank == 0:
         print("\nRe-organizing data to training / validation / test sets...")
         organize_training_set(save_dir, train_frac, valid_frac, test_frac,
-                              rank_samples.shape[1], len(z_eff), num_spectra, len(ells), len(k), True)
+                              rank_samples.shape[1], len(z_eff), num_spectra, len(ells), len(k_save), True)
 
 if __name__ == "__main__":
     main()
