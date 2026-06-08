@@ -101,19 +101,24 @@ def get_power_spectrum(samples, k, param_names, cosmo_dict, ps_config, theory, o
     for idx in range(num_to_calculate):
         sample_dict = dict(zip(param_names, samples[idx]))
         param_vector = prepare_ps_inputs(sample_dict, cosmo_dict, num_tracers, num_zbins)
-        ps = theory(k, ells, param_vector)
+        try:
+            ps = theory(k, ells, param_vector)
+        except Exception as e:
+            print(f"Rank {rank}: CAMB/theory error at sample {idx}: {e}. skipping...")
+            result[idx] = -1
+            continue
         if use_window: ps = apply_window(ps, W)
 
         ps = np.transpose(ps, (1, 0, 3, 2))
         if not np.any(np.isnan(ps)) and \
-            not np.any(np.isinf(ps)): 
+            not np.any(np.isinf(ps)):
             galaxy_ps[idx] = ps
-        else: 
+        else:
             print("NaN or inf fouund in power spectrum!")
             result[idx] = -1
 
         # save progress after a certain amount of iterations
-        if idx % checkpoint_iter == 0 and output_dir != None:
+        if idx % checkpoint_iter == 0 and idx > 1 and output_dir != None:
             print(f"Rank {rank} ({idx+1}/{num_to_calculate} done) saving progress...")
             np.savez(os.path.join(output_dir,"pk-raw_"+str(rank)+"_.npz"), params=samples, galaxy_ps=np.array(galaxy_ps))
 
@@ -127,9 +132,8 @@ def main():
     size = comm.Get_size()
     rank = comm.Get_rank()
 
-    if len(sys.argv) < 7:
-        if rank == 0: print("USAGE: python make_training_set_eft.py <cosmo_config_file> <survey_config_file> <save_dir> <k array file> <N> <mode>")
-        return -1
+    if size == 1:
+        print("Warning: Running with a single MPI process. Consider using more processes for faster generation of the training set.")
 
     parser = argparse.ArgumentParser()
     parser.add_argument("cosmo_config_file", type=str,
@@ -156,7 +160,7 @@ def main():
     mode               = args.mode
     use_window         = args.windowed
 
-    if not os.path.exists(save_dir):
+    if not os.path.exists(save_dir) and rank == 0:
         print("Attempting to create save directory...")
         os.mkdir(save_dir)
 
@@ -192,6 +196,7 @@ def main():
     if rank == 0: 
         if   mode == "hypercube":   
             all_samples = make_latin_hypercube(param_ranges, N)
+            all_samples = apply_w0_wa_constraint(all_samples, param_names)
         elif mode == "hypersphere": 
             all_samples = make_hypersphere(param_ranges, num_params, N)
             all_samples = apply_w0_wa_constraint(all_samples, param_names)
@@ -200,16 +205,16 @@ def main():
                 raise ValueError(f"Fiducial cosmology is outside of hypersphere! r = {r}")
             else:
                 print("Verified fiducial cosmology lies within hypersphere")
-    else:         
-        all_samples = np.zeros((N, num_params))
+        N_actual = all_samples.shape[0]
+    comm.Barrier()
+    N_actual = comm.bcast(N_actual, root=0)
+    if rank != 0:
+        all_samples = np.empty((N_actual, num_params))
     comm.Barrier()
     comm.Bcast(all_samples, root=0)
 
-    assert N % size == 0
-    offset = int((N / size) * rank)
-    data_len = int(N / size)
-    rank_samples = all_samples[offset:offset+data_len,:]
-    assert rank_samples.shape[0] == data_len
+    rank_samples = np.array_split(all_samples, size, axis=0)[rank]
+    N_rank = rank_samples.shape[0]
 
     theory = ps_theory_calculator.PowerSpectrumMultipole1Loop(ps_config)
 
@@ -230,8 +235,9 @@ def main():
             print("ERROR! failed to calculate fiducial power spectrum! Exiting...")
             return -1
 
+    comm.Barrier()
     t1 = time.time()
-    if rank == 0: print("Generating", str(int(N)), "power spectra across", str(size), "processors ("+str(int(N / size))+" per processor)...")
+    if rank == 0: print("Generating", str(int(N_actual)), "power spectra across", str(size), "processors (~"+str(int(N_actual / size))+" per processor)...")
 
     galaxy_ps, result = get_power_spectrum(rank_samples, k, param_names, cosmo_dict, ps_config, theory, save_dir, rank, W, use_window)
 
@@ -245,7 +251,7 @@ def main():
     galaxy_ps = galaxy_ps[idx_pass]
     rank_samples = rank_samples[idx_pass]
 
-    dataset_info = prepare_header_info(param_names, cosmo_dict, N - fail_compute)
+    dataset_info = prepare_header_info(param_names, cosmo_dict, N_actual - fail_compute)
 
     if galaxy_ps.shape[0] > 1:
         np.savez(os.path.join(save_dir,"pk-raw_"+str(rank)+"_.npz"), params=rank_samples, galaxy_ps=galaxy_ps)
@@ -258,8 +264,7 @@ def main():
 
     t2 = time.time()
     print("Rank {:d} Done! Took {:0.0f} hours {:0.0f} minutes".format(rank, math.floor((t2 - t1)/3600), math.floor((t2 - t1)/60%60)))
-    print("Made {:0.0f} / {:0.0f} galaxy power spectra".format((N/size) - fail_compute, N/size))
-    #print("{:0.0f} ({:0.2f}%) power spectra failed to compute".format(fail_compute, 100.*fail_compute / (N/size)))
+    print("Made {:0.0f} / {:0.0f} galaxy power spectra".format(N_rank - fail_compute, N_rank))
 
     comm.Barrier()
     if rank == 0:

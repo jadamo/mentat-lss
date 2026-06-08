@@ -1,14 +1,14 @@
 # directory that all other paths are relative to
-input_dir: /home/u12/jadamo/SPHEREx/spherex_emu/
+input_dir: /path/to/repository/
 # file paths are relative w.r.t. the repository directory
 # Where to save the network
-save_dir: ./emulators/stacked_transformer_2t_2z_hypersphere/
+save_dir: ./relative/path/to/save/directory/
 # Where your training set lives
-training_dir: ../../xdisk/training_set_eft_2t_2z_hypersphere/
+training_dir: /relative/path/to/training/set//
 # Location of config file with cosmology + bias parameters
 # This file contains all of the parameter ranges
-cosmo_dir : ./configs/cosmo_pars/cosmo_pars_2t_2z.yaml
-sampling_type : hypersphere
+cosmo_dir : /relative/path/to/cosmo/params/config.yaml
+sampling_type : hypersphere # <- or hypercube
 
 model_type : stacked_transformer
 loss_type : hyperbolic_chi2
@@ -33,7 +33,6 @@ galaxy_ps_emulator:
 # Training parameters
 num_epochs: 500
 galaxy_ps_learning_rate: 0.005
-nw_ps_learning_rate : 0.0005
 batch_size: 1000
 training_set_fraction : 1.0
 early_stopping_epochs: 25

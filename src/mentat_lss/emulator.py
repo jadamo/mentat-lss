@@ -359,12 +359,12 @@ class ps_emulator():
         """Loads the inverse data covariance matrix for use in certain loss functions and normalizations"""
 
         # TODO: Upgrade to handle different number of k-bins for each zbin
-        cov_file = self.input_dir+self.training_dir
+        cov_file = os.path.join(self.input_dir, self.training_dir)
         # Temporarily store with double percision to increase numerical stability\
-        if os.path.exists(cov_file+"cov.dat"):
-            cov = torch.load(cov_file+"cov.dat", weights_only=True).to(torch.float64)
-        elif os.path.exists(cov_file+"cov.npy"):
-            cov = torch.from_numpy(np.load(cov_file+"cov.npy"))
+        if os.path.exists(os.path.join(cov_file,"cov.dat")):
+            cov = torch.load(os.path.join(cov_file,"cov.dat"), weights_only=True).to(torch.float64)
+        elif os.path.exists(os.path.join(cov_file,"cov.npy")):
+            cov = torch.from_numpy(np.load(os.path.join(cov_file,"cov.npy")))
         else:
             self.logger.warning("Could not find covariance matrix! Using identity matrix instead...")
             cov = torch.eye(self.num_spectra*self.num_ells*self.num_kbins).unsqueeze(0)
