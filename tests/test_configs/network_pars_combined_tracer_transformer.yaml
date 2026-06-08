@@ -1,16 +1,16 @@
 # directory that all other paths are relative to
-input_dir: /path/to/repository/
+input_dir: ""
 # file paths are relative w.r.t. the repository directory
 # Where to save the network
-save_dir: ./relative/path/to/save/directory/
+save_dir: ./tests/test_networks/combined_tracer_transformer/
 # Where your training set lives
-training_dir: /relative/path/to/training/set//
+training_dir: ./tests/test_data/
 # Location of config file with cosmology + bias parameters
 # This file contains all of the parameter ranges
-cosmo_dir : /relative/path/to/cosmo/params/config.yaml
-sampling_type : hypersphere # <- or hypercube
+cosmo_dir : ./tests/test_configs/cosmo_pars_2t_2z.yaml
+sampling_type : hypersphere
 
-model_type : stacked_transformer
+model_type : combined_tracer_transformer
 loss_type : hyperbolic_chi2
 
 num_cosmo_params    : 5
@@ -19,6 +19,7 @@ num_nuisance_params : 3 # <- per tracer
 # specifications are for each network - will be repeated for each sample / redshift bin
 galaxy_ps_emulator:
   # mlp parameters
+  spectrum_embed_dim  : 8 
   num_mlp_blocks      : 2
   num_block_layers    : 5
   hidden_dim_factor   : 1.0
@@ -26,14 +27,14 @@ galaxy_ps_emulator:
 
   # transformer parameters
   num_transformer_blocks : 2
-  split_dim              : 5
-  split_size             : 20
-  add_mlp_output         : False
+  split_dim              : 4
+  split_size             : 4
+  add_mlp_output         : True
 
 # Training parameters
-num_epochs: 500
+num_epochs: 10
 galaxy_ps_learning_rate: 0.005
-batch_size: 1000
+batch_size: 50
 training_set_fraction : 1.0
 early_stopping_epochs: 25
 weight_initialization: He

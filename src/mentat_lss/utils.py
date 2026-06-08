@@ -4,13 +4,13 @@ from torch.nn import functional as F
 import numpy as np
 import itertools
 import torch
-
+from tqdm import tqdm
 
 def load_config_file(config_file:str):
     """loads in the emulator config file as a dictionary object
     
     Args:
-        config_file: Config file path and name to laod
+        config_file: Config file path and name to load
     Raises:
         IOError: If config_file could not be read in
     """
@@ -243,7 +243,7 @@ def is_in_hypersphere(priors, params):
 
 def organize_training_set(training_dir:str, train_frac:float, valid_frac:float, test_frac:float, 
                           param_dim, num_zbins, num_spectra, num_ells, k_dim, remove_old_files=True):
-    """Takes a set of matrices and reorganizes them into training, validation, and tests sets
+    """Takes a set of training data and reorganizes them into training, validation, and tests sets
     
     Args:
         training_dir: Directory contaitning matrices to organize
@@ -454,7 +454,7 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
     return chi2
 
 
-def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None, mode="galaxy_ps"):
+def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
     """run thru the given data set and returns the average loss value for a given sub-network, or all sub-networks in a list
 
     Args:
@@ -463,46 +463,105 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None, m
         loss_function (callable): loss function to use
         bin_idx (list, optional): [ps, z] values to calculate the average loss for. If None, recuresively calls
             this function with all possible values of ps and z. Defaults to None
-        mode (str, optional): which type of network to calculate the loss for (CURRENTLY HAS TO BE "galaxy_ps"!). Defaults to "galaxy_ps".
 
     Returns:
         total_loss (float or torch.Tensor): average loss corresponding to the net with bin_idx, or list of average loss for all sub-networks.
     """
 
     # if net_idx not specified, recursively call the function with all possible values
-    if bin_idx == None and mode == "galaxy_ps":
+    if bin_idx == None and emulator.model_type == "combined_tracer_transformer":
+        total_loss = torch.zeros(2 * emulator.num_zbins, requires_grad=False)
+        for net_idx in range(2 * emulator.num_zbins):
+            total_loss[net_idx] = calc_avg_loss(emulator, data_loader, loss_function, net_idx)
+        return total_loss
+    elif bin_idx == None:
         total_loss = torch.zeros(emulator.num_spectra, emulator.num_zbins, requires_grad=False)
         for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
-            total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z], mode)
+            total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z])
         return total_loss
     
     emulator.galaxy_ps_model.eval()
     avg_loss = 0.
+
+    if emulator.model_type == "combined_tracer_transformer":
+        net_idx  = bin_idx
+        is_cross = net_idx >= emulator.num_zbins
+        z_idx    = net_idx - emulator.num_zbins if is_cross else net_idx
+    else:
+        net_idx = (bin_idx[1] * emulator.num_spectra) + bin_idx[0]
     with torch.no_grad():
         for (i, batch) in enumerate(data_loader):
-            if mode == "galaxy_ps":
-                params = emulator.galaxy_ps_model.organize_parameters(batch[0])
-                params = normalize_cosmo_params(params, emulator.input_normalizations)
-                prediction = emulator.galaxy_ps_model.forward(params, (bin_idx[1] * emulator.num_spectra) + bin_idx[0])
-                target = torch.flatten(batch[1][:,bin_idx[0],bin_idx[1]], start_dim=1)
+            params = normalize_cosmo_params(batch[0], emulator.input_normalizations)
+            params = emulator.galaxy_ps_model.organize_parameters(params)
+            prediction = emulator.galaxy_ps_model.forward(params, net_idx)
+            if emulator.model_type == "combined_tracer_transformer":
+                spec_indices = emulator.galaxy_ps_model.cross_spectrum_indices if is_cross \
+                               else emulator.galaxy_ps_model.auto_spectrum_indices
+                target = torch.flatten(batch[1][:, spec_indices, z_idx], start_dim=0, end_dim=1)
             else:
-                raise KeyError(f"Invalid value for mode ({mode})")
+                target = torch.flatten(batch[1][:,bin_idx[0], bin_idx[1]], start_dim=1)
 
             avg_loss += loss_function(prediction, target, emulator.invcov_blocks, True).item()
 
     return avg_loss / (len(data_loader.dataset))
 
+def calc_chi2_statistics(emulator, data_loader, calc_partial=True, print_progress=True):
+    """Calculates the delta chi2 statistics of the emulator predictions on the given dataset, both for each individual sub-network and for the combined emulator output.
+
+    Args:
+        emulator (ps_emulator): emulator object to calculate the delta chi2 statistics with
+        data_loader (DataLoader): dataset to calculate the delta chi2 statistics on. Should be a Pytorch DataLoader object containing the test set.
+        calc_partial (bool, optional): whether or not to calculate the delta chi2 statistics for each individual sub-network. If False, only calculates the delta chi2 statistic for the combined emulator output. Defaults to True.
+        print_progress (bool, optional): whether or not to print a progress bar while calculating the delta chi2 statistics. Defaults to True.
+    Returns:
+        tuple: A tuple containing the delta chi2 statistics for each sub-network and the combined emulator output.
+    """
+    delta_chi2_partial = torch.zeros((emulator.num_spectra, emulator.num_zbins, len(data_loader.dataset)))
+    delta_chi2_combined = torch.zeros(len(data_loader.dataset))
+    save_idx = 0
+
+    # calculating delta chi2 in batches is much faster (~100x) than doing so individually
+    for (i, batch) in enumerate(tqdm(data_loader, disable=not print_progress)):
+
+        params = batch[0].to("cpu").detach().numpy()
+        pk_idx = batch[2].to(torch.int)
+
+        pk_raw = data_loader.dataset.get_normalized_galaxy_power_spectra(pk_idx)
+        pk_true = data_loader.dataset.get_true_galaxy_power_spectra(pk_idx, emulator.ps_fid, emulator.sqrt_eigvals, 
+                                                        emulator.Q, emulator.Q_inv).to("cpu").detach()
+
+        pk_pred_raw = emulator.get_power_spectra(params, False, True)
+        pk_pred = emulator.get_power_spectra(params, False, False)
+
+        for j in range(len(pk_idx)):
+
+            #loop thru networks
+            if calc_partial == True:
+                for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
+                    
+                    prediction = pk_pred_raw[j, ps, z].unsqueeze(0)
+                    target = pk_raw[j, ps, z].unsqueeze(0)
+
+                    chi2 = delta_chi_squared(prediction, target, emulator.invcov_full, True)
+                    delta_chi2_partial[ps, z, save_idx] = chi2.item()
+
+            delta_chi2_combined[save_idx] = delta_chi_squared(pk_pred[j], pk_true[j], emulator.invcov_full, False)
+
+            save_idx += 1
+
+    return delta_chi2_partial, delta_chi2_combined
 
 def normalize_cosmo_params(params:torch.Tensor, normalizations:torch.Tensor):
     """Linearly normalizes input cosmology + bias parameters to lie within the range [0,1]
 
     Args:
         params (torch.Tensor): batch of input parameters to normalize. Should have shape [batch, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)].
-        normalizations (torch.Tensor): Tensor of parameter minima and maxima. Should have shape [2, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)
+        normalizations (torch.Tensor): Tensor of parameter minima and maxima. Should have shape [2, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)]
 
     Returns:
-        norm_params (torch.Tensor): batch of normalized input parameters. has shape [batch, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)
+        norm_params (torch.Tensor): batch of normalized input parameters. has shape [batch, num_spectra*num_zbins, num_cosmo_params + (num_nuisance_params)]
     """
+
     return (params - normalizations[0]) / (normalizations[1] - normalizations[0])
 
 
@@ -529,7 +588,7 @@ def un_normalize_power_spectrum(ps_raw:torch.Tensor, ps_fid:torch.Tensor, sqrt_e
     """Reverses normalization of a batch of output power spectru based on the method developed by http://arxiv.org/abs/2403.12337
 
     Args:
-        ps (torch.Tensor): power spectrum to reverse normalization. Expected shape is either [nb, nps, nz, nk*nl] or [nb, 1, nk*nl]  
+        ps (torch.Tensor): power spectrum to reverse normalization. Expected shape is either [nb, nps, nz, nk*nl] or [nps, nz, nk*nl]  
         ps_fid (torch.Tensor): fiducial power spectrum used to reverse normalization. Expected shape is [nps*nz, nk*nl]  
         sqrt_eigvals (torch.Tensor): square root eigenvalues of the inverse covariance matrix. Expected shape is [nps*nz, nk*nl]  
         Q (torch.Tensor): eigenvectors of the inverse covariance matrix. Expected shape is [nps*nz, nk*nl, nk*nl]  

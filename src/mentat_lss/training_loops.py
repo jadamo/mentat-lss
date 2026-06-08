@@ -4,8 +4,9 @@ import itertools
 import logging
 import os
 
+import optuna
 from mentat_lss.emulator import ps_emulator, compile_multiple_device_training_results
-from mentat_lss.utils import calc_avg_loss, normalize_cosmo_params
+from mentat_lss.utils import calc_avg_loss, calc_chi2_statistics, normalize_cosmo_params
 
 
 def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.data.DataLoader, bin_idx:list):
@@ -14,35 +15,46 @@ def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.dat
     Args:
         emulator (ps_emulator): emulator object to train
         train_loader (torch.utils.data.DataLoader): training data to loop through
-        bin_idx (list): bin index [ps, z] identifying the sub-network to train.
+        bin_idx (list): bin index [ps, z] or [z] identifying the sub-network to train.
 
     Returns:
         avg_loss (torch.Tensor): Average training-set loss. Used for backwards propagation
     """
     total_loss = 0.
     total_time = 0
-    ps_idx = bin_idx[0]
-    z_idx  = bin_idx[1]
-    net_idx = (z_idx * emulator.num_spectra) + ps_idx
+    if emulator.model_type == "combined_tracer_transformer":
+        net_idx  = bin_idx
+        is_cross = net_idx >= emulator.num_zbins
+        z_idx    = net_idx - emulator.num_zbins if is_cross else net_idx
+    else:
+        ps_idx = bin_idx[0]
+        z_idx  = bin_idx[1]
+        net_idx = (z_idx * emulator.num_spectra) + ps_idx
     for (i, batch) in enumerate(train_loader):
         t1 = time.time()
-        
+
         # setup input parameters
-        params = emulator.galaxy_ps_model.organize_parameters(batch[0])
-        params = normalize_cosmo_params(params, emulator.input_normalizations)
-        
-        target = torch.flatten(batch[1][:,ps_idx,z_idx], start_dim=1)
+        params = normalize_cosmo_params(batch[0], emulator.input_normalizations)
+        params = emulator.galaxy_ps_model.organize_parameters(params)
+
         prediction = emulator.galaxy_ps_model.forward(params, net_idx)
-        
+
+        if emulator.model_type == "combined_tracer_transformer":
+            spec_indices = emulator.galaxy_ps_model.cross_spectrum_indices if is_cross \
+                           else emulator.galaxy_ps_model.auto_spectrum_indices
+            target = torch.flatten(batch[1][:, spec_indices, z_idx], start_dim=0, end_dim=1)
+        else:
+            target = torch.flatten(batch[1][:,ps_idx,z_idx], start_dim=1)
+
         # calculate loss and update network parameters
         loss = emulator.loss_function(prediction, target, emulator.invcov_full, True)
-
         assert torch.isnan(loss) == False
         assert torch.isinf(loss) == False
-        emulator.optimizer[ps_idx][z_idx].zero_grad(set_to_none=True)
-        loss.backward()
 
-        emulator.optimizer[ps_idx][z_idx].step()
+        emulator.optimizer[net_idx].zero_grad(set_to_none=True)
+        loss.backward()
+        emulator.optimizer[net_idx].step()
+
         total_loss += loss.detach()
         total_time += (time.time() - t1)
 
@@ -50,19 +62,28 @@ def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.dat
     return (total_loss / len(train_loader.dataset))
 
 
-def train_on_single_device(emulator:ps_emulator):
+def train_on_single_device(emulator:ps_emulator, trial=None):
     """Trains the emulator on a single device (cpu or gpu)
 
     Args:
         emulator (ps_emulator): network object to train.
+        trial (optuna.trial.Trial, optional): If not None, the current trial informaiton
+            from optuna. Default None
     """
 
     # load training / validation datasets
     train_loader = emulator.load_data("training", emulator.training_set_fraction)
     valid_loader = emulator.load_data("validation")
 
-    best_loss           = [torch.inf for i in range(emulator.num_zbins*emulator.num_spectra + 1)]
-    epochs_since_update = [0 for i in range(emulator.num_zbins*emulator.num_spectra + 1)]
+    if emulator.model_type == "combined_tracer_transformer":
+        bin_idx_list = list(range(2 * emulator.num_zbins))
+        total_num_nets = 2 * emulator.num_zbins
+    else:
+        bin_idx_list = list(itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)))
+        total_num_nets = emulator.num_spectra * emulator.num_zbins
+
+    best_loss           = [torch.inf for i in range(total_num_nets)]
+    epochs_since_update = [0 for i in range(total_num_nets)]
     emulator._init_training_stats()
     emulator._init_optimizer()
     emulator.galaxy_ps_model.train()
@@ -72,33 +93,47 @@ def train_on_single_device(emulator:ps_emulator):
     for epoch in range(emulator.num_epochs):
 
         # loop thru individual networks
-        for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
-            net_idx = (z * emulator.num_spectra) + ps
+        for bin_idx in bin_idx_list:
+            if emulator.model_type == "combined_tracer_transformer":
+                net_idx  = bin_idx
+                is_cross = net_idx >= emulator.num_zbins
+                z        = net_idx - emulator.num_zbins if is_cross else net_idx
+                net_id_str = f"{'cross' if is_cross else 'auto'}[{z}]"
+            else:
+                ps = bin_idx[0]
+                z = bin_idx[1]
+                net_idx = (z * emulator.num_spectra) + ps
+                net_id_str = f"[{ps}, {z}]"
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
                 continue
 
-            training_loss = train_galaxy_ps_one_epoch(emulator, train_loader, [ps, z])
+            training_loss = train_galaxy_ps_one_epoch(emulator, train_loader, bin_idx)
             if emulator.recalculate_train_loss:
-                emulator.train_loss[ps][z].append(calc_avg_loss(emulator, train_loader, emulator.loss_function, [ps, z], "galaxy_ps"))
+                emulator.train_loss[net_idx].append(calc_avg_loss(emulator, train_loader, emulator.loss_function, bin_idx))
             else:
-                emulator.train_loss[ps][z].append(training_loss)
-            emulator.valid_loss[ps][z].append(calc_avg_loss(emulator, valid_loader, emulator.loss_function, [ps, z], "galaxy_ps"))
-            
-            emulator.scheduler[ps][z].step(emulator.valid_loss[ps][z][-1])
+                emulator.train_loss[net_idx].append(training_loss)
+            emulator.valid_loss[net_idx].append(calc_avg_loss(emulator, valid_loader, emulator.loss_function, bin_idx))
+
+            emulator.scheduler[net_idx].step(emulator.valid_loss[net_idx][-1])
             emulator.train_time = time.time() - start_time
 
-            if emulator.valid_loss[ps][z][-1] < best_loss[net_idx]:
-                best_loss[net_idx] = emulator.valid_loss[ps][z][-1]
+            if emulator.valid_loss[net_idx][-1] < best_loss[net_idx]:
+                best_loss[net_idx] = emulator.valid_loss[net_idx][-1]
                 epochs_since_update[net_idx] = 0
                 emulator._update_checkpoint(net_idx, "galaxy_ps")
             else:
                 epochs_since_update[net_idx] += 1
 
-            emulator.logger.info("Net idx : [{:d}, {:d}], Epoch : {:d}, avg train loss: {:0.4e}\t avg validation loss: {:0.4e}\t ({:0.0f})".format(
-                ps, z, epoch, emulator.train_loss[ps][z][-1], emulator.valid_loss[ps][z][-1], epochs_since_update[net_idx]))
-            if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
-                emulator.logger.info("Model [{:d}, {:d}] has not impvored for {:0.0f} epochs. Initiating early stopping...".format(ps, z, epochs_since_update[net_idx]))
+            emulator.logger.info(f"Net idx : {net_id_str}, Epoch : {epoch}, avg train loss: {emulator.train_loss[net_idx][-1]:0.4e}\t avg validation loss: {emulator.valid_loss[net_idx][-1]:0.4e}\t ({epochs_since_update[net_idx]})")
 
+            if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
+                emulator.logger.info(f"Model {net_id_str} has not improved for {epochs_since_update[net_idx]} epochs. Initiating early stopping...")
+
+        if trial != None and epoch % 2 == 0 and epoch > 0:
+            accuracy = torch.median(calc_chi2_statistics(emulator, valid_loader, calc_partial=False, print_progress=False)[1]).item()
+            trial.report(accuracy, epoch)
+            if trial.should_prune():
+                raise optuna.exceptions.TrialPruned()
 
 def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     """Trains the given network on multiple gpu devices by splitting.
@@ -125,9 +160,10 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     train_loader = emulator.load_data("training", emulator.training_set_fraction)
     valid_loader = emulator.load_data("validation")
 
-    best_loss           = [torch.inf for i in range(emulator.num_zbins*emulator.num_spectra + 1)]
-    epochs_since_update = [0 for i in range(emulator.num_zbins*emulator.num_spectra + 1)]
     emulator._init_training_stats()
+    num_nets = len(emulator.train_loss)
+    best_loss           = [torch.inf for i in range(num_nets)]
+    epochs_since_update = [0 for i in range(num_nets)]
     emulator._init_optimizer()
 
     emulator.galaxy_ps_model.train()
@@ -136,32 +172,40 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     # loop thru epochs
     for epoch in range(emulator.num_epochs):
         # loop thru individual networks
-        for (ps, z) in net_indeces[gpu_id]:
-            net_idx = int((z * emulator.num_spectra) + ps)
+        for bin_idx in net_indeces[gpu_id]:
+            if emulator.model_type == "combined_tracer_transformer":
+                net_idx  = bin_idx
+                is_cross = net_idx >= emulator.num_zbins
+                z        = net_idx - emulator.num_zbins if is_cross else net_idx
+                net_id_str = f"{'cross' if is_cross else 'auto'}[{z}]"
+            else:
+                ps = bin_idx[0]
+                z = bin_idx[1]
+                net_idx = (z * emulator.num_spectra) + ps
+                net_id_str = f"[{ps}, {z}]"
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
                 continue
 
-            training_loss = train_galaxy_ps_one_epoch(emulator, train_loader, [ps, z])
+            training_loss = train_galaxy_ps_one_epoch(emulator, train_loader, bin_idx)
             if emulator.recalculate_train_loss:
-                emulator.train_loss[ps][z].append(calc_avg_loss(emulator, train_loader, emulator.loss_function, [ps, z], "galaxy_ps"))
+                emulator.train_loss[net_idx].append(calc_avg_loss(emulator, train_loader, emulator.loss_function, bin_idx))
             else:
-                emulator.train_loss[ps][z].append(training_loss)
-            emulator.valid_loss[ps][z].append(calc_avg_loss(emulator, valid_loader, emulator.loss_function, [ps, z], "galaxy_ps"))
-            
-            emulator.scheduler[ps][z].step(emulator.valid_loss[ps][z][-1])
+                emulator.train_loss[net_idx].append(training_loss)
+            emulator.valid_loss[net_idx].append(calc_avg_loss(emulator, valid_loader, emulator.loss_function, bin_idx))
+
+            emulator.scheduler[net_idx].step(emulator.valid_loss[net_idx][-1])
             emulator.train_time = time.time() - start_time
 
-            if emulator.valid_loss[ps][z][-1] < best_loss[net_idx]:
-                best_loss[net_idx] = emulator.valid_loss[ps][z][-1]
+            if emulator.valid_loss[net_idx][-1] < best_loss[net_idx]:
+                best_loss[net_idx] = emulator.valid_loss[net_idx][-1]
                 epochs_since_update[net_idx] = 0
                 emulator._update_checkpoint(net_idx, "galaxy_ps")
             else:
                 epochs_since_update[net_idx] += 1
 
-            emulator.logger.info("Net idx : [{:d}, {:d}], Epoch : {:d}, avg train loss: {:0.4e}\t avg validation loss: {:0.4e}\t ({:0.0f})".format(
-                ps, z, epoch, emulator.train_loss[ps][z][-1], emulator.valid_loss[ps][z][-1], epochs_since_update[net_idx]))
+            emulator.logger.info(f"Net idx : {net_id_str}, Epoch : {epoch}, avg train loss: {emulator.train_loss[net_idx][-1]:0.4e}\t avg validation loss: {emulator.valid_loss[net_idx][-1]:0.4e}\t ({epochs_since_update[net_idx]})")
             if epochs_since_update[net_idx] > emulator.early_stopping_epochs:
-                emulator.logger.info("Model [{:d}, {:d}] has not impvored for {:0.0f} epochs. Initiating early stopping...".format(ps, z, epochs_since_update[net_idx]))
+                emulator.logger.info(f"Model {net_id_str} has not improved for {epochs_since_update[net_idx]} epochs. Initiating early stopping...")
 
         if gpu_id == 0 and epoch % 5 == 0 and epoch > 0:
             emulator.logger.info("Checkpointing progress from all devices...")

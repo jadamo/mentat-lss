@@ -1,0 +1,150 @@
+# File containing fiducial and prior values
+# NOTE: This file will be very long if using all redshift and sample bins
+
+# Fiducial model for the EFT power spectrum
+# Based on planck 2018 cosmology and
+# The DESI DR1 full-shape analysis priors
+
+cosmo_param_names:
+  - h
+  - ombh2
+  - omch2
+  - As
+  - ns
+  - fnl
+bias_param_names:
+  - galaxy_bias_10     # b1
+  - galaxy_bias_20     # b2
+  - galaxy_bias_G2     # bG2
+  - galaxy_bias_Gamma3 # bGamma3
+  - galaxy_bias_01     # bphi
+  - galaxy_bias_11     # bphid
+counterterm_param_names:
+  - counterterm_0
+  - counterterm_2
+  - counterterm_4
+  - counterterm_fog
+stochastic_param_names:
+  - P_shot
+  - stochasticity_a0
+  - stochasticity_a2
+
+cosmo_params:
+  h: 
+    value: 0.6736
+    prior:
+      min: 0.4436
+      max: 0.9036
+  ombh2: 
+    value: 0.02218
+    prior:
+      min: 0.01998
+      max: 0.02438
+      mean: 0.02218
+      variance: 0.00055
+  omch2:
+    value: 0.1201
+    prior:
+      min: 0.0701
+      max: 0.1701
+  As:
+    value: 2.1e-9
+    prior:
+      min: 1.2e-9
+      max: 3.0e-9
+  ns:
+    value: 0.96589
+    prior:
+      min: 0.83989
+      max: 1.09189
+      mean: 0.96589
+      variance: 0.042
+  fnl:
+    value: 0
+
+# bias parameter names take the form <parameter_sample_redshift>
+# if just <parameter> is given, will assume that value is constant for all redshift and
+# sample bins (unrealistic)
+# Default values for a specific value of b1 can be calcuated from https://github.com/SPHEREx/Cosmo_Inference/blob/develop/src/lss_theory/lss_theory/data_vector/cosmo_formulas.py 
+nuisance_params:
+  galaxy_bias_10_0_0: # <- bounds are +- 1.25
+    value: 1.5
+    prior:
+      min: 0.25
+      max: 2.75
+  galaxy_bias_10_1_0:
+    value: 1.3
+    prior:
+      min: 0.05
+      max: 2.55
+  galaxy_bias_10_0_1:
+    value: 1.8
+    prior:
+      min: 0.55
+      max: 3.05
+  galaxy_bias_10_1_1:
+    value: 1.4
+    prior:
+      min: 0.15
+      max: 2.65
+  galaxy_bias_20_0_0: # <- bounds are +- 1.75
+    value: -1.37
+    prior:
+      min: -3.12
+      max: 0.38
+  galaxy_bias_20_1_0:
+    value: -1.572
+    prior:
+      min: -3.322
+      max: 0.178
+  galaxy_bias_20_0_1:
+    value: -0.78
+    prior:
+      min: -2.53
+      max: 0.97
+  galaxy_bias_20_1_1:
+    value: -1.49
+    prior:
+      min: -3.24
+      max: 0.26
+  galaxy_bias_G2_0_0: # <- bounds are +- 1.5
+    value: -0.286
+    prior:
+      min: -1.786
+      max: 1.214
+  galaxy_bias_G2_1_0:
+    value: -0.17
+    prior:
+      min: -1.67
+      max: 1.33
+  galaxy_bias_G2_0_1:
+    value: -0.457
+    prior:
+      min: -1.957
+      max: 1.043
+  galaxy_bias_G2_1_1:
+    value: -0.228
+    prior:
+      min: -1.728
+      max: 1.272
+  galaxy_bias_Gamma3:
+    value: 0
+  galaxy_bias_01:
+    value: 0
+  galaxy_bias_11:
+    value: 0
+  # For the emulator training set, set all counterterms + stochastic terms to 0
+  counterterm_0:
+    value: 0
+  counterterm_2:
+    value: 0
+  counterterm_4:
+    value: 0
+  counterterm_fog:
+    value: 0
+  P_shot:
+    value: 0
+  stochasticity_a0:
+    value: 0
+  stochasticity_a2:
+    value: 0
