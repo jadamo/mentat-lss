@@ -45,15 +45,12 @@ The following is an example of such a file.
     # This file contains all of the parameter ranges
     cosmo_dir : <path/to/cosmo_config.yaml>
 
+    # Can be one of 'stacked_transformer' or 'combined_tracer_transformer'
     model_type : stacked_transformer
     loss_type : hyperbolic_chi2
 
     num_cosmo_params    : 5
     num_nuisance_params : 3 # <- per tracer
-    num_tracers : 2
-    num_zbins   : 2
-    num_ells    : 2
-    num_kbins   : 25
 
     # specifications are for each network - will be repeated for each sample / redshift bin
     galaxy_ps_emulator:
@@ -87,8 +84,11 @@ The following is an example of such a file.
 Here are some important considerations to make before training:
 
 - You'll need to decide whether to try training your network on a CPU or GPU (assuming one is available to you). In general, networks with transformers train **significantly** faster on  GPUs, so we recommend you try training on GPUs whenever possible. By defualt, mentat-lss will attempt to use a GPU if it is available.
-- The specific binning information (num_zbins, num_ells, etc) must match those found in the training set. The code will throw an error on startup if they don't.
+- The code will read in binning information from `ps_properties.npz` in your training set directroy. Alternatively, you can specify `num_kbins`, `num_zbins`, `num_tracers`, and `num_ells` in the config file. We recommend you use the first option as it's less error prone.
 - The above specifications are the optimized values found in `Adamo et al (2026)`_. The optimal setup will potentially be different for your case, but these values should provide a good starting point.
+- There are two major architecture options to choose from, those being:
+    - `stacked_transformer`: this architecture assigns a seperate network for each tracer and redshift bin, which in our testing performs best, but also is more expensive to train. This is the default architecture in `mentat-lss`.
+    - `combined_tracer_transformer`: this option uses two networks per redshift bin, with one handling the auto spectra and the other the cross spectra. This setup is faster to train but performs worse than stacked_transformer in our testing. If you have a large number of tracers and redshift bins, this option may be more feasible for you.
 
 .. _`Adamo et al (2026)`: https://arxiv.org/abs/2603.16003
 
@@ -122,6 +122,10 @@ validation set loss values, as well as the number of epochs elapses since the va
     `Net idx : [ps, z], epoch: N, avg train loss: l1, avg validation loss: l2 (epochs_since_improved)`
 
 This will repeat until either the validation loss for all sub-nets hasn't improved for 25 epochs, or if max_epochs is reached.
+
+Optimizing the Emulator (NEW)
+---------------------
+As of version 1.1, we have added Optuna support for optimizing your emulator! There is a new script in `scripts/optimize_with_optuna.py` that will run an Optuna project that performs hyperparameter optimization far more efficiently than a basic grid search.
 
 Testing the Emulator
 --------------------

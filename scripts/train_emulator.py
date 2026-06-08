@@ -21,7 +21,7 @@ def main():
 
     # train on a single cpu / gpu
     if emulator.num_gpus < 2:
-        logger.info("Training network on device:", emulator.device.type)
+        logger.info(f"Training network on device: {emulator.device.type}")
         training_loops.train_on_single_device(emulator)
 
     # split the sub-networks to train on multiple gpus
@@ -29,7 +29,10 @@ def main():
         logger.info("Splitting up training on {:d} GPUs...".format(emulator.num_gpus))
         # spawn() usually behaves better than fork() on HPC
         mp.set_start_method("spawn", force=True)
-        net_idx = torch.Tensor(list(itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)))).to(int)
+        if emulator.model_type == "combined_tracer_transformer":
+            net_idx = torch.Tensor(list(range(2 * emulator.num_zbins))).to(int)
+        else:
+            net_idx = torch.Tensor(list(itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)))).to(int)
         split_indices = net_idx.chunk(emulator.num_gpus)
         
         # spawn() usually behaves better than fork() on HPC

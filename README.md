@@ -1,6 +1,7 @@
 [![Static Badge](https://img.shields.io/badge/arXiv-2603.16003-darkred)](https://arxiv.org/abs/2603.16003)
 
 [![pytests](https://github.com/jadamo/mentat-lss/actions/workflows/pytest.yaml/badge.svg)](https://github.com/jadamo/mentat-lss/actions/workflows/pytest.yaml)
+[![codecov](https://codecov.io/gh/jadamo/mentat-lss/graph/badge.svg)](https://codecov.io/gh/jadamo/mentat-lss)
 ![Read the Docs](https://img.shields.io/readthedocs/spherex_emu)
 
 # MENTAT-LSS
@@ -18,7 +19,7 @@ This package works on both Linux and MacOS (intel and arm64) platforms, and has 
 ### Preliminaries
 
 1. To enable GPU functionality for network training, make sure you have CUDA installed (or python 3.8+ if using apple silicon).
-2. You will need some way to generate galaxy power spectrum multipoles to generate training sets. One option is to download and install both [ps_1loop](https://github.com/archaeo-pteryx/ps_1loop) and [ps_theory_calculator](https://github.com/archaeo-pteryx/ps_theory_calculator). You might need to request access to those repositories, in which case you can contact Yosuke Kobayashi (yosukekobayashi@arizona.edu). We have also included a version of [FAST-PT](https://github.com/jablazek/FAST-PT) to satisfy this requirnment.
+2. You will need some way to generate galaxy power spectrum multipoles to generate training sets. One option is to download and install both [ps_1loop](https://github.com/archaeo-pteryx/ps_1loop) and [ps_theory_calculator](https://github.com/archaeo-pteryx/ps_theory_calculator). You might need to request access to those repositories, in which case you can contact Yosuke Kobayashi (yosukekobayashi@arizona.edu). We are also working on interfacing this library with [cocoa](https://github.com/CosmoLike/cocoa), so stay tuned!
 
 ### From pip (recommended)
 
