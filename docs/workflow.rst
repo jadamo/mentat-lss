@@ -88,7 +88,7 @@ Here are some important considerations to make before training:
 - The above specifications are the optimized values found in `Adamo et al (2026)`_. The optimal setup will potentially be different for your case, but these values should provide a good starting point.
 - There are two major architecture options to choose from, those being:
     - `stacked_transformer`: this architecture assigns a seperate network for each tracer and redshift bin, which in our testing performs best, but also is more expensive to train. This is the default architecture in `mentat-lss`.
-    - `combined_tracer_transformer`: this option assigns all tracers in a given redshift bin to the same network, which is faster to train but performs worse than stacked_transformer in our testing. If you have a large number of tracers and redshift bins, this option may be more feasible for you.
+    - `combined_tracer_transformer`: this option uses two networks per redshift bin, with one handling the auto spectra and the other the cross spectra. This setup is faster to train but performs worse than stacked_transformer in our testing. If you have a large number of tracers and redshift bins, this option may be more feasible for you.
 
 .. _`Adamo et al (2026)`: https://arxiv.org/abs/2603.16003
 
