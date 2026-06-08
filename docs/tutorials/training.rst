@@ -75,4 +75,13 @@ we've proved an example slurm script below, based off running on University of A
     python train_emulator.py $config_file
 
 Note the line ``#SBATCH --gres=gpu:2`` will request 2 GPUs on the same node.
-Using gpus across different notes will be added in a future release, so do so at your own risk.
+Using gpus across different nodes will be added in a future release, so do so at your own risk.
+
+
+Optimizing Hyperparameters
+======================
+
+There are many different methods for optimizing network hyperparameters, all with varying levels of complexity and efficiency. In v1.1, we have added a script that
+utilizes Optuna_, a powerful library that performs hyperparameter optimization far more efficiently than a basic grid search. We highly recommend using this script to optimize your emulator, as it will likely save you a significant amount of time and computational resources.
+
+.. _Optuna: https://optuna.org/
