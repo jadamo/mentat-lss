@@ -1,9 +1,8 @@
 import numpy as np
 from scipy.interpolate import InterpolatedUnivariateSpline as ius
-from scipy.integrate import quad
+from scipy.integrate import quad, solve_ivp
 from scipy.special import spherical_jn
 from scipy.fft import dst, idst
-
 
 # NOTE: code as-is takes ~0.1 ms to calculate fgrowth in this method
 class LCDMCosmology():
@@ -17,6 +16,10 @@ class LCDMCosmology():
         self.params['H_0_in_Mpc_inv'] = self.params['h'] * 100 / (299792458 * 1e-3) # in unit of 1/Mpc
         self.params['omega_m0'] = self.params['Omega_m0'] * self.params['h']**2
         self.params['Omega_de0'] = 1 - self.params['Omega_m0'] - self.params['Omega_K0']
+
+    @staticmethod
+    def get_a(redshift):
+        return 1. / (1 + redshift)
 
     def get_E(self, redshift):
         Omega_m0 = self.params['Omega_m0']
@@ -88,10 +91,74 @@ class LCDMCosmology():
         self.params['H_0_in_Mpc_inv'] = self.params['h'] * 100 / (299792458 * 1e-3) # in unit of 1/Mpc
 
 class w0waCosmology(LCDMCosmology):
-    """"""
-
-    def __init__(self, h, Omega_m0, Omega_K0=0., om0=-1, oma=0):
+    """For derivation, see https://arxiv.org/pdf/astro-ph/0208512"""
+    
+    def __init__(self, h, Omega_m0, w0, wa, Omega_K0=0.):
         super().__init__(h, Omega_m0, Omega_K0)
+        self.params['w0'] = w0
+        self.params['wa'] = wa
+        self._growth_sol = None 
+
+    def _get_f_de(self, redshift):
+        """Dark energy density scaling: rho_de(a)/rho_de0 for CPL w(a)=w0+wa*(1-a)."""
+        a = self.get_a(redshift)
+        w0 = self.params['w0']
+        wa = self.params['wa']
+        return a**(-3 * (1 + w0 + wa)) * np.exp(-3 * wa * (1 - a))
+
+    def get_E(self, redshift):
+        Omega_m0 = self.params['Omega_m0']
+        Omega_de0 = self.params['Omega_de0']
+        Omega_K0 = self.params['Omega_K0']
+        f_de = self._get_f_de(redshift)
+        return np.sqrt(Omega_m0 * (1 + redshift)**3 + Omega_K0 * (1 + redshift)**2 + Omega_de0 * f_de)
+
+    def get_Omega_de(self, redshift):
+        return self.params['Omega_de0'] * self._get_f_de(redshift) / self.get_E(redshift)**2
+
+    def _get_dlnE_dlna(self, a):
+        """d ln E / d ln a from the Friedmann + acceleration equations.
+        Exact for any w(a) (unlike older growing-mode integral)."""
+        redshift = 1. / a - 1.
+        Omega_m = self.get_Omega_m(redshift)
+        Omega_de = self.get_Omega_de(redshift)
+        Omega_K = self.get_Omega_K(redshift)
+        w_a = self.params['w0'] + self.params['wa'] * (1 - a)
+        return -(3. / 2.) * Omega_m - Omega_K - (3. / 2.) * (1 + w_a) * Omega_de
+
+    def _solve_growth(self, a_min=1e-3):
+        """Integrate the linear growth ODE D'' + (2 + dlnE/dlna) D' - (3/2) Omega_m(a) D = 0
+        (' = d/dlna) from deep matter domination (D=a) to a=1.
+
+        The Heath/Peebles closed-form integral used in LCDMCosmology.get_Dgrowth
+        is exact only when the non-matter component behaves like a cosmological
+        constant or curvature. For general w0-wa dark energy it does not solve
+        this equation, so the growth factor must be integrated numerically.
+        """
+        def rhs(lna, y):
+            a = np.exp(lna)
+            D, Dp = y
+            Omega_m = self.get_Omega_m(1. / a - 1.)
+            return [Dp, -(2 + self._get_dlnE_dlna(a)) * Dp + 1.5 * Omega_m * D]
+        
+        y0 = [a_min, a_min]  # matter-dominated growing mode: D=a, dD/dlna=a
+        self._growth_sol = solve_ivp(rhs, [np.log(a_min), 0.], y0,
+                                      dense_output=True, rtol=1e-10, atol=1e-12)
+
+    # linear growth factor for w0wa dark energy (unnormalized; callers use ratios)
+    def get_Dgrowth(self, redshift):
+        if self._growth_sol is None:
+            self._solve_growth()
+        D, _ = self._growth_sol.sol(np.log(self.get_a(redshift)))
+        return D
+
+    # linear growth rate for w0wa dark energy
+    def get_fgrowth(self, redshift):
+        if self._growth_sol is None:
+            self._solve_growth()
+        D, Dp = self._growth_sol.sol(np.log(self.get_a(redshift)))
+        return Dp / D
+
 
 class IRResum:
 

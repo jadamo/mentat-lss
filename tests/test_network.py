@@ -183,9 +183,9 @@ def test_emulator_mode(model_mode, expected):
         test_emulator = emulator.ps_emulator(test_dir, model_mode)
         assert test_emulator.galaxy_ps_model is not None
 
-@pytest.mark.parametrize("model_type,", [
-    ("stacked_transformer"),
-    ("combined_tracer_transformer")
+@pytest.mark.parametrize("model_type", [
+    "stacked_transformer",
+    "combined_tracer_transformer",
 ])
 def test_save_and_load(model_type):
     current_dir = os.path.dirname(os.path.realpath(__file__))
@@ -210,9 +210,9 @@ def test_save_and_load(model_type):
     if os.path.exists(save_dir):
         os.system(f"rm -r {save_dir}")
 
-@pytest.mark.parametrize("model_type,", [
-    ("stacked_transformer"),
-    ("combined_tracer_transformer")
+@pytest.mark.parametrize("model_type", [
+    "stacked_transformer",
+    "combined_tracer_transformer",
 ])
 def test_get_power_spectra(model_type):
 
@@ -245,9 +245,9 @@ def bin_to_net_index(bin_idx, model_type):
     else:
         return bin_idx
 
-@pytest.mark.parametrize("model_type,", [
-    ("stacked_transformer"),
-    ("combined_tracer_transformer")
+@pytest.mark.parametrize("model_type", [
+    "stacked_transformer",
+    "combined_tracer_transformer",
 ])
 def test_compile_multiple_device_training_results(model_type):
     current_dir = os.path.dirname(os.path.realpath(__file__))
