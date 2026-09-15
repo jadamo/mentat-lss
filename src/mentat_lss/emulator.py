@@ -191,7 +191,7 @@ class ps_emulator():
         galaxy_ps_emu = self.get_emulated_power_spectrum(params, extrapolate, raw_output)
 
         if len(galaxy_ps_emu.shape) == 4 and raw_output == False: 
-            return galaxy_ps_emu + self.analytic_model.get_analytic_terms(params, self.required_emu_params, self.get_required_analytic_parameters())
+            return galaxy_ps_emu + self.analytic_model.get_analytic_terms(params, self.required_emu_params)
         else:
             return galaxy_ps_emu
 
@@ -254,19 +254,15 @@ class ps_emulator():
 
 
     def get_required_analytic_parameters(self):
-        """Returns a list of input parameters used by our analytic eft model, not directly emulated.
-        
-        NOTE: These parameters are currently hard-coded.
+        """Returns a list of input parameters used by an arbitrary analytic model, not directly emulated.
 
         Returns:
-            required_analytic_params (list): list of input (counterterm + stoch) parameters.
+            required_analytic_params (list): list of input analytically-modelled parameters.
         """
-        analytic_params = []
-        if 0 in self.ells:  analytic_params.append("counterterm_0")
-        if 2 in self.ells:  analytic_params.append("counterterm_2")
-        if 4 in self.ells:  analytic_params.append("counterterm_4")
-        analytic_params.extend(["counterterm_fog", "P_shot"])
-        return analytic_params
+        if self.analytic_model is not None:
+            return self.analytic_model.get_required_parameters()
+        else:
+            return []
 
 
     def check_kbins_are_compatible(self, test_kbins:np.array):

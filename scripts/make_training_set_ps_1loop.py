@@ -73,6 +73,9 @@ def prepare_header_info(param_names, fiducial_cosmology, n_samples):
     return header_info
 
 def apply_window(galaxy_ps_unwin, W):
+
+    # W has shape (num_zbins, num_tracer_combos, num_ells_windowed, num_k_windowed, num_ells_unwindowed, num_k_unwindowed)
+    # for me, that is #(8, 10, 3, 47, 3, 366)
     nz, nps, _, _ = galaxy_ps_unwin.shape
     nk = W.shape[-3]
     nl = W.shape[-4]
@@ -169,8 +172,8 @@ def main():
 
     k_data = np.load(k_array_file)
     if use_window:
-        W_data = np.load(os.path.join(save_dir, "W.npz"))
-        W = W_data["W"]
+        W_data = np.load(os.path.join(save_dir, "BW.npz"))
+        W = W_data["BW"]
         k = W_data["k_unwin"]
         k_save = W_data["k_win"]
     else:
@@ -231,6 +234,15 @@ def main():
         if result[0] == 0:
             np.save(os.path.join(save_dir,"ps_fid.npy"), galaxy_ps)
             np.savez(os.path.join(save_dir,"ps_properties.npz"), k=k_save, z_eff=z_eff, ells=np.array(ells), ndens=ndens_table)
+        else:
+            print("ERROR! failed to calculate fiducial power spectrum! Exiting...")
+            return -1
+        # unwindowed PSM for calculating the covariance matrix
+        cov_cosmo_dict = cosmo_dict.copy()
+        cov_cosmo_dict["nuisance_params"]["P_shot"] = {"value": 1.0}
+        galaxy_ps_unwin, result = get_power_spectrum([{}], k_save, param_names, cov_cosmo_dict, ps_config, theory, save_dir, rank, W, use_window=False)
+        if result[0] == 0:
+            np.save(os.path.join(save_dir,"ps_fid_for_cov.npy"), galaxy_ps_unwin)
         else:
             print("ERROR! failed to calculate fiducial power spectrum! Exiting...")
             return -1

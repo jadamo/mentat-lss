@@ -5,6 +5,7 @@ from scipy.interpolate import InterpolatedUnivariateSpline, RectBivariateSpline
 from scipy.optimize import fsolve
 import itertools, math
 import warnings
+
 warnings.simplefilter("error", RuntimeWarning)
 
 import mentat_lss._vendor.symbolic_pofk.linear as linear
@@ -48,7 +49,6 @@ class analytic_eft_model():
         self._set_default_params()
         self._set_reference_cosmology()
 
-
     def _set_default_params(self):
         """sets default cosmology and nuiscance parameters to a dictionary"""
 
@@ -63,15 +63,27 @@ class analytic_eft_model():
             for pname in self.params_stoch.keys():
                 self.params['%s_%s_%s' % (pname, ps, z)] = self.params_stoch[pname]
 
-
     def _set_reference_cosmology(self):
 
-        h = self.params["h"]
+        h = getattr(self.params, "h", 0.6736)
         #Omb = self.params['ombh2'] / self.params['h']**2
         #Omc = self.params['omch2'] / self.params['h']**2
         Om0 = 0.3 # <- matching what yosuke's code does right now, this is always faixed
 
         self.reference_cosmology = LCDMCosmology(h, Om0)
+
+    def get_required_analytic_parameters(self):
+        """Returns a list of input parameters used by our analytic eft model, not directly emulated.
+        
+        Returns:
+            required_analytic_params (list): list of input (counterterm + stoch) parameters.
+        """
+        analytic_params = []
+        if 0 in self.ells:  analytic_params.append("counterterm_0")
+        if 2 in self.ells:  analytic_params.append("counterterm_2")
+        if 4 in self.ells:  analytic_params.append("counterterm_4")
+        analytic_params.extend(["counterterm_fog", "P_shot", "a0", "a2"])
+        return analytic_params
 
     def set_ir_resum_params(self, h:float, D:float):
         """Initializes IR Resummation calculation object
@@ -198,6 +210,7 @@ class analytic_eft_model():
         if khigh != None:
             pk_lin = pk_lin * np.exp(-(k / khigh))
         return pk_lin
+    
 
     def get_pk_lin_irres_rsd(self, k:np.array, mu:np.array, f:float, D:float):
         """Calculates the linear power spectrum including IR resummation, RSD, and velocity damping
@@ -242,31 +255,6 @@ class analytic_eft_model():
         kmu = np.kron(k, mu).reshape(len(k), len(mu))
         return np.exp(-0.5*(f * self.sigma_v*kmu)**2)
 
-
-    def get_tree_term(self, k:np.array, mu:np.array, bias1, bias2, f, D):
-        """Calculates the tree-level anisotropic galaxy power spectrum
-        This term is also known as the Kaiser term.
-
-        NOTE: This function is not used by the current emulator version!
-        """
-        plin = self.get_pk_lin(k, D)
-        plin_nw = self.irres.get_pk_nw(k) * D**2
-        plin_w = plin - plin_nw
-
-        # BAO damping factor in redshift space
-        Sigma2_1 = (1 + mu**2 * f * (2 + f)) * self.Sigma2
-        Sigma2_2 = f**2 * mu**2 * (mu**2 - 1) * self.dSigma2
-        Sigma2_tot = Sigma2_1 + Sigma2_2
-
-        plin_nw_tile = np.tile(plin_nw, (len(mu),1)).T
-        plin_w_tile = np.tile(plin_w, (len(mu),1)).T
-        damp_fac = np.kron(k**2, D**2 * Sigma2_tot).reshape(len(k),len(mu))
-
-        Z1_tile1 = np.tile(bias1["b1"] + f * mu**2, (len(k), 1))
-        Z1_tile2 = np.tile(bias2["b1"] + f * mu**2, (len(k), 1))
-
-        return Z1_tile1 * Z1_tile2 * (plin_nw_tile + (1 + damp_fac) * np.exp(-damp_fac) * plin_w_tile)
-    
 
     def get_ctr_terms(self, k:np.array, mu:np.array, b1_1:float, b1_2:float, ctr1:dict, ctr2:dict, f:float, D:float):
         """Calculates the LO and NLO counterterms for the galaxy power spectrum for a specific tracer and redshift bin combination.
@@ -385,27 +373,28 @@ class analytic_eft_model():
         return pkmu
 
 
-    def get_analytic_terms(self, param_vector:np.array, emu_params_list:dict, analytic_params_list:dict):
+    def get_analytic_terms(self, param_vector:np.array, emu_params_list:dict):
         """Calculates and returns the counterterm and stochastic contributions to the galaxy power spectrum.
 
         Args:
             param_vector (np.array): 1D array of all parameters
             emu_params_list (list): list of parameters used by the emulator
-            analytic_params_list (list): list of parameters used for the counterterms and shot-noise terms
 
         Returns:
-            pk_analtytic: P_ctr + P_stoch multipoles. Has shape (nps, nz, nl, nk).
+            pk_analtytic: P_ctr + P_stoch multipoles. Has shape (nps, nz, nk, nl).
         """
+        analytic_params_list = self.get_required_analytic_parameters()
+
         if len(param_vector) == len(emu_params_list) or \
            np.all(param_vector[len(emu_params_list):] == 0):
-            return 0
+            return np.zeros((self.num_spectra, len(self.redshift_list), len(self.k), len(self.ells)))
 
         self.set_params(param_vector, emu_params_list, analytic_params_list)
         self.calculate_pk_lin(self.k_lin, self.params)
         self.set_ir_resum_params(self.params["h"], 1.)
         mu_grid = np.linspace(0., 1., 51)
 
-        pk_ell = np.zeros((len(self.redshift_list), self.num_spectra, len(self.ells), len(self.k)))
+        pk_ell = np.zeros((self.num_spectra, len(self.redshift_list), len(self.k), len(self.ells)))
         for z in range(len(self.redshift_list)):
 
             # map (k, mu) to different values based on AP effect
@@ -427,9 +416,6 @@ class analytic_eft_model():
                 ctr1 = {pname: self.params['%s_%s_%s' % (pname, tr_1, z)] for pname in list(self.params_ctr.keys())}
                 ctr2 = {pname: self.params['%s_%s_%s' % (pname, tr_2, z)] for pname in list(self.params_ctr.keys())}
                 stoch = {pname: self.params['%s_%s_%s' % (pname, tr_1, z)] for pname in list(self.params_stoch.keys())}
-                # pkmu = self.get_tree_term(k_grid, mu_grid, bias1, bias2, params["fgrowth"][z], params["Dgrowth"][z]) + \
-                #        self.get_ctr_terms(k_grid, mu_grid, bias1, bias2, ctr1, ctr2, params["fgrowth"][z], params["Dgrowth"][z]) + \
-                #        self.get_stochastic_terms()
 
                 pkmu = self.get_ctr_terms(k_grid, mu_grid, b1_1, b1_2, ctr1, ctr2, self.params["fgrowth"][z], self.params["Dgrowth"][z]) + \
                        self.get_stochastic_terms(k_grid, mu_grid, tr_1, z, stoch, k_nl, tr_1 != tr_2)
@@ -445,14 +431,10 @@ class analytic_eft_model():
                 # compute the Legendre multipole moments
                 pkmu = np.tile(pkmu, (len(self.ells),1,1))
                 legendre = np.array([np.tile((2*l+1) * lpmv(0,l,self.mu), (len(self.k),1)) for l in self.ells])
-                pk_ell[z, ps_idx] = romb(pkmu * legendre, dx=self.dmu, axis=2)
+                pk_ell[ps_idx, z] = romb(pkmu * legendre, dx=self.dmu, axis=2).T
                 
                 # pk_ell_ctr1 = self.get_pk_ell_ctr1_ref(self.k, self.ells, self.params["alpha_perp"], self.params["alpha_para"], irres=True)
                 # pk_ell = pk_ell + pk_ell_ctr1
-
                 ps_idx += 1
 
-        return pk_ell.transpose(1,0,3,2) / (self.params["h"])**3
-    
-class analytic_tns_terms():
-    """"""
+        return pk_ell
