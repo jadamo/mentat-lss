@@ -47,7 +47,7 @@ def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.dat
             target = torch.flatten(batch[1][:,ps_idx,z_idx], start_dim=1)
 
         # calculate loss and update network parameters
-        loss = emulator.loss_function(prediction, target, emulator.invcov_full, True)
+        loss = emulator.loss_function(prediction, target, normalized=True)
         assert torch.isnan(loss) == False
         assert torch.isinf(loss) == False
 
@@ -59,7 +59,7 @@ def train_galaxy_ps_one_epoch(emulator:ps_emulator, train_loader:torch.utils.dat
         total_time += (time.time() - t1)
 
     emulator.logger.debug("time for epoch: {:0.1f}s, time per batch: {:0.1f}ms".format(total_time, 1000*total_time / len(train_loader)))
-    return (total_loss / len(train_loader.dataset))
+    return (total_loss / len(train_loader))
 
 
 def train_on_single_device(emulator:ps_emulator, trial=None):
@@ -134,6 +134,7 @@ def train_on_single_device(emulator:ps_emulator, trial=None):
             trial.report(accuracy, epoch)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
+
 
 def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
     """Trains the given network on multiple gpu devices by splitting.

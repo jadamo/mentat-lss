@@ -12,7 +12,7 @@ from mentat_lss.models.analytic_terms import analytic_eft_model
 from mentat_lss.dataset import pk_galaxy_dataset
 from mentat_lss.utils import load_config_file, get_parameter_ranges,\
                               normalize_cosmo_params, un_normalize_power_spectrum, \
-                              delta_chi_squared, mse_loss, hyperbolic_loss, hyperbolic_chi2_loss, \
+                              delta_chi_squared, hyperbolic_chi2_loss, \
                               get_invcov_blocks, get_full_invcov, is_in_hypersphere
 
 class ps_emulator():
@@ -400,10 +400,6 @@ class ps_emulator():
 
         if self.loss_type == "chi2":
             self.loss_function = delta_chi_squared
-        elif self.loss_type == "mse":
-            self.loss_function = mse_loss
-        elif self.loss_type == "hyperbolic":
-            self.loss_function = hyperbolic_loss
         elif self.loss_type == "hyperbolic_chi2":
             self.loss_function = hyperbolic_chi2_loss
         else:
