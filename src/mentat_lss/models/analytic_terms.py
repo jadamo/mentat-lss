@@ -45,7 +45,7 @@ class analytic_eft_model():
         self.ndens = ndens
 
         self.k_lin = np.geomspace(1e-4, 10., 1000)
-        self.sigma_v = 0.
+        self.sigma_v = 0. # <- value used in Adamo et al 2026, may be updated in the future
         self._set_default_params()
         self._set_reference_cosmology()
 
@@ -288,59 +288,6 @@ class analytic_eft_model():
         #return ctr_NLO
         return ctr_LO + ctr_NLO
 
-    def get_pkmu_for_ctr1_ref(self, k_ref, mu_ref, alpha_perp, alpha_para, irres=True):
-        k_ref = np.atleast_1d(k_ref)
-        mu_ref = np.atleast_1d(mu_ref)
-
-        # mapping of (k, mu)
-        fac = np.sqrt(1 + mu_ref**2 * ((alpha_perp / alpha_para)**2 - 1))
-        mu = mu_ref * (alpha_perp / alpha_para) / fac
-        k = np.kron(k_ref, fac).reshape(len(k_ref), len(mu_ref)) / alpha_perp
-
-        # spline interpolation of mu^l k^2 P_lin(k)
-        k_grid = np.geomspace(np.max([np.min(k), self._kmin_fft]), np.min([np.max(k), self._kmax_fft]), self._nmax_fft)
-        mu_grid = np.linspace(0., 1., 51)
-        # k2mul = np.kron(k_grid**2, mu_grid**l).reshape(len(k_grid), len(mu_grid))
-        if irres:
-            pkmu_grid = self.get_pk_lin_irres_rsd(k_grid, mu_grid)
-        else:
-            pkmu_grid = np.tile(self.get_pk_lin(k_grid), (len(mu_grid),1)).T
-
-        pkmu_interp = RectBivariateSpline(k_grid, mu_grid, pkmu_grid)
-        pkmu = pkmu_interp.ev(k, np.tile(mu, (len(k_ref), 1)))
-        pkmu = pkmu / (alpha_perp**2 * alpha_para)
-
-        if len(k_ref) == 1 or len(mu_ref) == 1:
-            pkmu = np.ravel(pkmu)
-        return pkmu
-    
-    def get_coeff_ctr1_multipole(self, l):
-        cl = (self.ctr1['c%s' % (l)] + self.ctr2['c%s' % (l)]) / 2. if l in [0,2,4] else 0.
-        return cl
-
-    def get_pk_ell_ctr1_ref(self, k_ref, ells, alpha_perp, alpha_para, irres=True):
-        k_ref = np.atleast_1d(k_ref)
-        mu_ref = np.linspace(0.,1.,2**8+1)
-        dmu = mu_ref[1] - mu_ref[0]
-
-        coeffs = np.array([self.get_coeff_ctr1_multipole(l) for l in ells])
-        coeffs = np.tile(coeffs, (len(k_ref), 1)).T
-
-        # mapping of (k, mu)
-        fac = np.sqrt(1 + mu_ref**2 * ((alpha_perp / alpha_para)**2 - 1))
-        mu = mu_ref * (alpha_perp / alpha_para) / fac
-        k = np.kron(k_ref, fac).reshape(len(k_ref), len(mu_ref)) / alpha_perp
-
-        pkmu_ref = self.get_pkmu_for_ctr1_ref(k_ref, mu_ref, alpha_perp, alpha_para, irres=irres)
-
-        pkmu_ref = np.tile(pkmu_ref, (len(ells),1,1))
-        legendre = np.array([np.tile((2*l+1) * lpmv(0,l,mu_ref) * mu**l * self.fgrowth**(l/2), (len(k_ref),1)) * k**2 for l in ells])
-        pk_ell_ctr1 = - 2 * romb(pkmu_ref * legendre, dx=dmu, axis=2)
-        pk_ell_ctr1 = coeffs * pk_ell_ctr1
-
-        return pk_ell_ctr1
-
-
     def get_stochastic_terms(self, k:np.array, mu:np.array, ps_idx:int, z_idx:int, stoch1:dict, k_nl:float, is_cross:bool=False):
         """Calculates the stochastic comtribution to the galaxy power spectrum for a specific tracer and redshift bin combination.
 
@@ -425,16 +372,12 @@ class analytic_eft_model():
                 # Interpolate to desired k, mu values
                 pkmu_interp = RectBivariateSpline(k_grid, mu_grid, pkmu)
                 pkmu = pkmu_interp.ev(k_eval, np.tile(mu_eval, (len(self.k), 1)))
-                #k_eval = k_eval.reshape(len(self.k), len(mu))
                 pkmu = pkmu / (self.params["alpha_perp"][z]**2 * self.params["alpha_para"][z])
 
                 # compute the Legendre multipole moments
                 pkmu = np.tile(pkmu, (len(self.ells),1,1))
                 legendre = np.array([np.tile((2*l+1) * lpmv(0,l,self.mu), (len(self.k),1)) for l in self.ells])
                 pk_ell[ps_idx, z] = romb(pkmu * legendre, dx=self.dmu, axis=2).T
-                
-                # pk_ell_ctr1 = self.get_pk_ell_ctr1_ref(self.k, self.ells, self.params["alpha_perp"], self.params["alpha_para"], irres=True)
-                # pk_ell = pk_ell + pk_ell_ctr1
                 ps_idx += 1
 
         return pk_ell

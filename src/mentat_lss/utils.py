@@ -391,11 +391,11 @@ def hyperbolic_chi2_loss(predict:torch.Tensor, target:torch.Tensor, invcov:torch
     Returns:
         hyperbolic_chi2 (torch.Tensor): mean hyperbolic chi2 of the given batch of inputs
     """
-    chi2 = delta_chi_squared(predict, target, invcov, normalized)
+    chi2 = delta_chi_squared(predict, target, invcov, normalized, return_sum=False)
     return torch.mean(torch.sqrt(1 + 2*chi2)) - 1
 
 
-def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Tensor, normalized=False):
+def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Tensor, normalized=False, return_sum=True):
     """Calculates the delta chi squared of the given inputs, which is given by the equation,
     delta_chi2 = (predict - target)^T * invcov * (predict - target).
     
@@ -407,6 +407,7 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
         target (torch.Tensor): data from the training / validation / test set. Should have shape [b, 1, nl*nk] OR [nps, nz, nk, nl]
         invcov (torch.Tensor): full inverse covariance matrix. Should have shape (z, nps*nl*nk, nps*nl*nk). Is only used if normalized == False
         normalized (bool, optional): Whether or not predict and target are normalized. Defaults to False.
+        return_sum (bool, optional): Whether or not to return the sum of delta chi2 over the batch. Defaults to True.
 
     Raises:
         ValueError: if predict and target have different or unexpected shapes
@@ -448,10 +449,10 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
         elif delta.dim() == 2:
             chi2 = torch.bmm(delta.unsqueeze(1), delta.unsqueeze(2)).squeeze()
         else:
-            raise ValueError(f"Expected input data with 2 dimensions, but got {delta.dim()}")
+            raise ValueError(f"Expected input data with 1 or 2 dimensions, but got {delta.dim()}")
 
-    chi2 = torch.sum(chi2)
-    return chi2
+    if return_sum: return torch.sum(chi2)
+    else:          return chi2
 
 
 def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
@@ -479,8 +480,12 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
         for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
             total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z])
         return total_loss
-    
-    emulator.galaxy_ps_model.eval()
+
+    if emulator.galaxy_ps_model.training == True:
+        was_in_training_mode = True
+        emulator.galaxy_ps_model.eval()
+    else: 
+        was_in_training_mode = False
     avg_loss = 0.
 
     if emulator.model_type == "combined_tracer_transformer":
@@ -502,6 +507,9 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
                 target = torch.flatten(batch[1][:,bin_idx[0], bin_idx[1]], start_dim=1)
 
             avg_loss += loss_function(prediction, target, emulator.invcov_blocks, True).item()
+
+    if was_in_training_mode:
+        emulator.galaxy_ps_model.train()
 
     return avg_loss / (len(data_loader.dataset))
 
