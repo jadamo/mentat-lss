@@ -2,7 +2,7 @@
 
 [![pytests](https://github.com/jadamo/mentat-lss/actions/workflows/pytest.yaml/badge.svg)](https://github.com/jadamo/mentat-lss/actions/workflows/pytest.yaml)
 [![codecov](https://codecov.io/gh/jadamo/mentat-lss/graph/badge.svg)](https://codecov.io/gh/jadamo/mentat-lss)
-![Read the Docs](https://img.shields.io/readthedocs/spherex_emu)
+[![Read the Docs](https://img.shields.io/readthedocs/spherex-emu)](https://spherex-emu.readthedocs.io/en/latest/index.html)
 
 # MENTAT-LSS
 
