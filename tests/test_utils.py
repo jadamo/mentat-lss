@@ -59,6 +59,18 @@ def test_get_parameter_ranges():
     assert expected_params == params
     assert np.all(np.equal(expected_priors, priors))
 
+@pytest.mark.parametrize("batch_size", [1, 2, 8, 200])
+def test_hyperbolic_chi2(batch_size):
+    """The hyperbolic transform must be applied per sample, then averaged."""
+    torch.manual_seed(0)
+    invcov = torch.eye(10)
+    predict = torch.randn(batch_size, 10) * 0.1
+    target = torch.zeros(batch_size, 10)
+
+    per_sample_chi2 = ((predict - target) ** 2).sum(dim=1)
+    expected = torch.mean(torch.sqrt(1 + 2 * per_sample_chi2)) - 1
+
+    assert torch.allclose(hyperbolic_chi2_loss(predict, target, invcov, True), expected)
 
 @pytest.mark.parametrize("input, output, invcov, normalized, expected", [
     (torch.ones(1,10), torch.ones(1,10), torch.eye(10), True, 0),

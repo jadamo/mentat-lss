@@ -349,53 +349,24 @@ def get_invcov_blocks(cov:torch.Tensor, num_spectra:int, num_zbins:int, num_kbin
     return invcov_blocks
 
 
-def mse_loss(predict:torch.Tensor, target:torch.Tensor, **args):
-    """Calculates the mean-squared-error loss of the inputs.
-
-    Args:
-        predict (torch.Tensor): output of the network
-        target (torch.Tensor): (batch of) elements in the training set. Should have the same shape as predict
-        **args: extra arguments (needed by interface of ps_emulator)
-
-    Returns:
-        mse_loss: mean-squared-error loss of the given inputs
-    """
-    return F.mse_loss(predict, target, reduction="sum")
-
-
-def hyperbolic_loss(predict, target, **args):
-    """Calculates the hyperbolic loss of the inputs given by
-    <sqrt(1 + 2(predict - target)**2)> - 1
-
-    Args:
-        predict (torch.Tensor): output of the network
-        target (torch.Tensor): (batch of) elements in the training set. Should have the same shape as predict
-        **args: extra arguments (needed by interface of ps_emulator)
-
-    Returns:
-        hyperbolic_loss: hyperbolic loss of the given inputs
-    """
-    return torch.mean(torch.sqrt(1 + 2*(predict - target)**2)) - 1
-
-
-def hyperbolic_chi2_loss(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Tensor, normalized=False):
+def hyperbolic_chi2_loss(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Tensor=None, normalized=False):
     """Calculates the hyperbolic delta chi2 of the given inputs, which is given by the equation
     L = <sqrt(1 + 2(delta_chi_squared)> - 1
 
     Args:
         predict (torch.Tensor): output of the network
         target (torch.Tensor): (batch of) elements in the training set. Should have the same shape as predict
-        invcov (torch.Tensor): either a full or block inverse covariance matrix, depending on whether the input is normalizeed or not
+        invcov (torch.Tensor, optional): full inverse covariance matrix. Should have shape (z, nps*nl*nk, nps*nl*nk). Only needed if normalized == False
         normalized (bool, optional): whether or not the inputs are normalized. Defaults to False.
 
     Returns:
         hyperbolic_chi2 (torch.Tensor): mean hyperbolic chi2 of the given batch of inputs
     """
-    chi2 = delta_chi_squared(predict, target, invcov, normalized)
+    chi2 = delta_chi_squared(predict, target, invcov, normalized, reduction="none")
     return torch.mean(torch.sqrt(1 + 2*chi2)) - 1
 
 
-def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Tensor, normalized=False):
+def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Tensor=None, normalized=False, reduction="mean"):
     """Calculates the delta chi squared of the given inputs, which is given by the equation,
     delta_chi2 = (predict - target)^T * invcov * (predict - target).
     
@@ -405,8 +376,9 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
     Args:
         predict (torch.Tensor): output of the emulator. Should have shape [b, 1, nl*nk] OR [nps, nz, nk, nl]
         target (torch.Tensor): data from the training / validation / test set. Should have shape [b, 1, nl*nk] OR [nps, nz, nk, nl]
-        invcov (torch.Tensor): full inverse covariance matrix. Should have shape (z, nps*nl*nk, nps*nl*nk). Is only used if normalized == False
+        invcov (torch.Tensor, optional): full inverse covariance matrix. Should have shape (z, nps*nl*nk, nps*nl*nk). Only needed if normalized == False
         normalized (bool, optional): Whether or not predict and target are normalized. Defaults to False.
+        reduction (str, optional): How to reduce the delta chi2 values. Options are "none", "mean", or "sum". Defaults to "mean".
 
     Raises:
         ValueError: if predict and target have different or unexpected shapes
@@ -419,8 +391,12 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
     if not isinstance(target, torch.Tensor):
         target = torch.from_numpy(target).to(torch.float32).to(invcov.device)
 
-    if target.device != invcov.device:  target = target.to(invcov.device)
-    if predict.device != invcov.device: predict = predict.to(invcov.device)
+    if invcov is None and normalized == False:
+        raise ValueError("ERROR! invcov must be passed in if normalized == False, but invcov is None")
+
+    device = invcov.device if invcov is not None else predict.device
+    if target.device != device:  target = target.to(device)
+    if predict.device != device: predict = predict.to(device)
 
     # inputs are size [b, 1, nl*nk]
     # OR [nps, nz, nk, nl] (same as cosmo_inference)
@@ -432,7 +408,7 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
     # calculate the delta chi2 for the entire emulator output, assuming normalization has been undone
     if normalized == False:
         if delta.dim() == 2:
-            chi2 += torch.matmul(delta, torch.matmul(invcov, delta.unsqueeze(2)))
+            chi2 = torch.einsum('bi,ij,bj->b', delta, invcov, delta)
         elif delta.dim() == 4:
             (nps, nz, nk, nl) = delta.shape
             for z in range(nz):
@@ -448,10 +424,12 @@ def delta_chi_squared(predict:torch.Tensor, target:torch.Tensor, invcov:torch.Te
         elif delta.dim() == 2:
             chi2 = torch.bmm(delta.unsqueeze(1), delta.unsqueeze(2)).squeeze()
         else:
-            raise ValueError(f"Expected input data with 2 dimensions, but got {delta.dim()}")
+            raise ValueError(f"Expected input data with 1 or 2 dimensions, but got {delta.dim()}")
 
-    chi2 = torch.sum(chi2)
-    return chi2
+    if   reduction == "none": return chi2
+    elif reduction == "mean": return torch.mean(chi2)
+    elif reduction == "sum":  return torch.sum(chi2)
+    raise ValueError(f"invalid reduction: {reduction}")
 
 
 def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
@@ -479,8 +457,12 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
         for (ps, z) in itertools.product(range(emulator.num_spectra), range(emulator.num_zbins)):
             total_loss[ps, z] = calc_avg_loss(emulator, data_loader, loss_function, [ps, z])
         return total_loss
-    
-    emulator.galaxy_ps_model.eval()
+
+    if emulator.galaxy_ps_model.training == True:
+        was_in_training_mode = True
+        emulator.galaxy_ps_model.eval()
+    else: 
+        was_in_training_mode = False
     avg_loss = 0.
 
     if emulator.model_type == "combined_tracer_transformer":
@@ -501,9 +483,12 @@ def calc_avg_loss(emulator, data_loader, loss_function:callable, bin_idx=None):
             else:
                 target = torch.flatten(batch[1][:,bin_idx[0], bin_idx[1]], start_dim=1)
 
-            avg_loss += loss_function(prediction, target, emulator.invcov_blocks, True).item()
+            avg_loss += loss_function(prediction, target, normalized=True).item()
 
-    return avg_loss / (len(data_loader.dataset))
+    if was_in_training_mode:
+        emulator.galaxy_ps_model.train()
+
+    return avg_loss / (len(data_loader))
 
 def calc_chi2_statistics(emulator, data_loader, calc_partial=True, print_progress=True):
     """Calculates the delta chi2 statistics of the emulator predictions on the given dataset, both for each individual sub-network and for the combined emulator output.
