@@ -4,10 +4,16 @@ import torch
 import torch.multiprocessing as mp
 import itertools
 import logging
-
+import argparse
 import mentat_lss.training_loops as training_loops
 
 def main():
+
+    parser = argparse.ArgumentParser(description="Train a power spectrum emulator using the mentat-lss package.")
+    parser.add_argument("config_file", type=str, help="Path to the configuration file for the emulator.")
+    parser.add_argument("--from-checkpoint", action="store_true", help="If set, the emulator will be trained from a checkpoint instead of from scratch.")
+
+    args = parser.parse_args()
 
     if len(sys.argv) < 2:
         print("USAGE: python train_emulator.py <config_file>")
@@ -17,7 +23,9 @@ def main():
     logger = logging.getLogger("train_emulator")
 
     t1 = time.time()
-    emulator = ps_emulator(sys.argv[1], "train")
+    if args.from_checkpoint:  mode = "train_from_checkpoint"
+    else:                     mode = "train"
+    emulator = ps_emulator(args.config_file, mode)
 
     # train on a single cpu / gpu
     if emulator.num_gpus < 2:
@@ -38,11 +46,11 @@ def main():
         # spawn() usually behaves better than fork() on HPC
         mp.spawn(
             training_loops.train_on_multiple_devices,
-            args=(split_indices, sys.argv[1]),
+            args=(split_indices, args.config_file, mode),
             nprocs=emulator.num_gpus,
             join=True
         )
-        full_emulator = compile_multiple_device_training_results(emulator.input_dir + emulator.save_dir, sys.argv[1], emulator.num_gpus)
+        full_emulator = compile_multiple_device_training_results(emulator.input_dir + emulator.save_dir, args.config_file, emulator.num_gpus)
         full_emulator._save_model()
 
     t2 = time.time()

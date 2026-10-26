@@ -13,9 +13,14 @@ dist/
 *.egg-info/
 .DS_Store
 
+# Data built by tests
+tests/test_data/
+tests/test_networks/
+
 # Ignore other optional directories
+optuna_optimization/
 emulators/
-notebooks/
+*notebooks/
 chains/
 plots/
 data/

@@ -25,8 +25,8 @@ class ps_emulator():
         Args:
             net_dir (str): path specifying either the directory or full filepath of the trained emulator to load from.
             if a directory, assumes the config file is called "config.yaml"
-            mode (str): whether the emulator should initialize for training, or to load from a previous training run. One 
-            of either ["train", "eval"]. Detailt "train"
+            mode (str): whether the emulator should initialize for training from scratch or from a checkpoint, or to load from a previous training run. One 
+            of either ["train", "train_from_checkpoint", "eval"]. Detailt "train"
             device (torch.device): Device to load the emulator on. If None, will attempt to load on any available
             GPU (or mps for macos) device. Default None.
 
@@ -60,13 +60,24 @@ class ps_emulator():
             self.galaxy_ps_model.apply(self._init_weights)
             self.galaxy_ps_checkpoint = copy.deepcopy(self.galaxy_ps_model.state_dict())
 
+        elif mode == "train_from_checkpoint":
+            self.logger.debug("Initializing power spectrum emulator from checkpoint in training mode")
+            self._init_fiducial_power_spectrum()
+            self._init_inverse_covariance()
+            self._diagonalize_covariance()
+            self._init_input_normalizations()
+            checkpoint_dir = os.path.join(self.input_dir, self.save_dir)
+            self.load_trained_model(checkpoint_dir)
+            self.galaxy_ps_model.train()
+            self.galaxy_ps_checkpoint = copy.deepcopy(self.galaxy_ps_model.state_dict())
+
         elif mode == "eval":
             self.logger.debug("Initializing power spectrum emulator in evaluation mode")
             self.load_trained_model(net_dir)
             self._init_analytic_model()
 
         else:
-            raise KeyError(f"Invalid mode specified! Must be one of ['train', 'eval'] but was {mode}.")
+            raise KeyError(f"Invalid mode specified! Must be one of ['train', 'train_from_checkpoint', 'eval'] but was {mode}.")
 
     def _load_ps_properties(self, path):
         """loads the k-bins, z-bins, and effective redshifts of the power spectrum training data from file. 

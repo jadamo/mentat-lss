@@ -136,7 +136,7 @@ def train_on_single_device(emulator:ps_emulator, trial=None):
                 raise optuna.exceptions.TrialPruned()
 
 
-def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
+def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str, mode:str="train"):
     """Trains the given network on multiple gpu devices by splitting.
 
     This function is called in parralel using multiproccesing, and works by training specific sub-networks 
@@ -147,12 +147,13 @@ def train_on_multiple_devices(gpu_id:int, net_indeces:list, config_dir:str):
         gpu_id (int): gpu number for logging and organizing save location.
         net_indeces (list): List of sub-network indices to train on the given gpu. This is different for each gpu
         config_dir (str): Location of the input network config file.
+        mode (str, optional): Whether to train from scratch or from a checkpoint. Defaults to "train".
     """
     # Each sub-process gets its own indpendent emulator object, where it will train the corresponding
     # sub-networks based on net_indeces
     device = torch.device(f"cuda:{gpu_id}")
     logging.basicConfig(level=logging.DEBUG, format=f"[GPU {gpu_id}] %(message)s")
-    emulator = ps_emulator(config_dir, "train", device)
+    emulator = ps_emulator(config_dir, mode, device)
 
     base_save_dir = os.path.join(emulator.input_dir, emulator.save_dir)
     emulator.save_dir += "rank_"+str(gpu_id)+"/"
